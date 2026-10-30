@@ -1,0 +1,14 @@
+node_modules/
+__pycache__/
+*.pyc
+*.sqlite*
+.env
+.env.*
+!.env.example
+dist/
+artifacts/
+.tapseal/
+node.json
+*wallet-monitor*.json
+*.log
+.DS_Store

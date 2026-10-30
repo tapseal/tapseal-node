@@ -1,0 +1,188 @@
+{
+  "nums_internal_key": "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+  "owner_xonly": "774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+  "token_commitment_STONK": "438da2910679f6916a1af91e9c2022a4a4a76dda7fd1f421df3683470027370b",
+  "auth_commitment_STONK": "3d8160ab43d991f105eaf735b3fabc7a4e6f74c8a7e7409453fac299dfcb2a89",
+  "seal": [
+    {
+      "lock": 0,
+      "leaf": "20438da2910679f6916a1af91e9c2022a4a4a76dda7fd1f421df3683470027370b7520774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbac",
+      "output_key": "18b975575087fb556e3ab6a60f33cce9c65c7a3d75e99fbfd0ba9beda758655e"
+    },
+    {
+      "lock": 950000,
+      "leaf": "20438da2910679f6916a1af91e9c2022a4a4a76dda7fd1f421df3683470027370b7503f07e0eb17520774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cbac",
+      "output_key": "f3111d27e148121db4f1f1e3c29fa04e3ba00d73331d88e1e89c1738dda34c66"
+    }
+  ],
+  "payloads": [
+    {
+      "op": {
+        "op": "deploy",
+        "tick": "STONK",
+        "dec": 8,
+        "max": 2100000000000000,
+        "mode": "fixed",
+        "rate": 10000,
+        "cap": 150000,
+        "treasury_vout": 1,
+        "auth_vout": 2
+      },
+      "hex": "54534c3101010553544f4e4b0880809dd085bedd0300904ef093090102"
+    },
+    {
+      "op": {
+        "op": "deploy",
+        "tick": "BOND",
+        "dec": 8,
+        "max": 1000000000000000,
+        "mode": "curve",
+        "p0": 500,
+        "p1": 3000,
+        "cap": 0,
+        "treasury_vout": 1,
+        "start": 900000,
+        "end": 905000
+      },
+      "hex": "54534c31010204424f4e440880809aa6eaafe30101f403b8170001a0f736a89e37"
+    },
+    {
+      "op": {
+        "op": "deploy",
+        "tick": "FREE",
+        "dec": 0,
+        "max": 1000000,
+        "mode": "fair",
+        "lim": 1000
+      },
+      "hex": "54534c310100044652454500c0843d02e807"
+    },
+    {
+      "op": {
+        "op": "mint",
+        "tick": "STONK",
+        "vout": 1,
+        "lock": 0
+      },
+      "hex": "54534c31020553544f4e4b0100"
+    },
+    {
+      "op": {
+        "op": "mint",
+        "tick": "STONK",
+        "vout": 1,
+        "lock": 950000
+      },
+      "hex": "54534c31020553544f4e4b01f0fd39"
+    },
+    {
+      "op": {
+        "op": "transfer",
+        "ticks": [
+          {
+            "tick": "STONK",
+            "change": 4
+          }
+        ],
+        "edicts": [
+          {
+            "t": 0,
+            "amt": 500000000,
+            "vout": 1,
+            "lock": 0
+          },
+          {
+            "t": 0,
+            "amt": 700000000,
+            "vout": 2,
+            "lock": 0
+          },
+          {
+            "t": 0,
+            "amt": 100000000,
+            "vout": 3,
+            "lock": 960000
+          }
+        ]
+      },
+      "hex": "54534c3103010553544f4e4b05030080cab5ee0101000080cee4cd0202000080c2d72f0380cc3a"
+    },
+    {
+      "op": {
+        "op": "burn",
+        "tick": "STONK",
+        "amt": 100000000,
+        "change": 1
+      },
+      "hex": "54534c31040553544f4e4b80c2d72f02"
+    },
+    {
+      "op": {
+        "op": "deploy",
+        "tick": "LIM",
+        "dec": 0,
+        "max": 1000000,
+        "mode": "fair",
+        "lim": 100,
+        "wallet_cap": 500
+      },
+      "hex": "54534c310104034c494d00c0843d0264f403"
+    },
+    {
+      "op": {
+        "op": "mint",
+        "tick": "STONK",
+        "vout": 1,
+        "lock": 0,
+        "owner": "774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb"
+      },
+      "hex": "54534c31020553544f4e4b010001774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb"
+    },
+    {
+      "op": {
+        "op": "mint",
+        "tick": "STONK",
+        "vout": 1,
+        "lock": 0,
+        "owner": "774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+        "pass": {
+          "max": 5000000000000,
+          "expiry": 300,
+          "sig": "cd24de360d0cb122587c1547ac35ed279871c3aa6966c8c34835381d61d7e2432e939ce411abcc732e6f2a268a21217483c1f3a4ad87e60842e08898e254fec3"
+        }
+      },
+      "hex": "54534c31020553544f4e4b010003774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb80a0e5b9c29101ac02cd24de360d0cb122587c1547ac35ed279871c3aa6966c8c34835381d61d7e2432e939ce411abcc732e6f2a268a21217483c1f3a4ad87e60842e08898e254fec3"
+    },
+    {
+      "op": {
+        "op": "allowlist",
+        "tick": "STONK",
+        "next_auth": 1,
+        "key": "59dbf46f8c94759ba21277c33784f41645f7b44f6c596a58ce92e666191abe3e",
+        "price": 20000,
+        "reserve": 1000000000000000,
+        "end": 900000
+      },
+      "hex": "54534c31060553544f4e4b0259dbf46f8c94759ba21277c33784f41645f7b44f6c596a58ce92e666191abe3ea09c0180809aa6eaafe301a0f736"
+    }
+  ],
+  "allowlist": {
+    "signer_secret": "000000000000000000000000000000000000000000000000000000000000004d",
+    "signer_xonly": "59dbf46f8c94759ba21277c33784f41645f7b44f6c596a58ce92e666191abe3e",
+    "tick": "STONK",
+    "owner": "774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+    "max": 5000000000000,
+    "expiry": 300,
+    "message": "4d521f075acbda716c551c2879d092d7aebc7bd0c11232b593f00cb496122478",
+    "sig": "cd24de360d0cb122587c1547ac35ed279871c3aa6966c8c34835381d61d7e2432e939ce411abcc732e6f2a268a21217483c1f3a4ad87e60842e08898e254fec3"
+  },
+  "curve": {
+    "paid_sats": 100000,
+    "minted": 0,
+    "max": 2100000000000000,
+    "dec": 8,
+    "p0": 500,
+    "p1": 3000,
+    "atoms": 19545219516718
+  }
+}

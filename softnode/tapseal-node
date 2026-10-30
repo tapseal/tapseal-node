@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""
+tapseal-node — run a TAPSEAL soft node: indexer + API + the local node console, in one process tree.
+
+  tapseal-node init                     light node, settings copied from the seed node (network, start block, peers)
+  tapseal-node init --full --rpc-url …  full node on your own Bitcoin RPC (can build and broadcast transactions)
+  tapseal-node start                    run in the foreground (Ctrl+C stops); restarts a crashed part
+  tapseal-node status                   height, sync, state root and how many peers agree
+  tapseal-node peers [add URL | remove URL]
+  tapseal-node service install          run in the background: starts at boot/login, restarts if it stops
+                                        (systemd on Linux and WSL, launchd on macOS, cron elsewhere)
+
+Light mode needs no Bitcoin node: blocks come from a public block API (mempool.space by default), one request per
+block, with block-data integrity checks. It does not fully validate Bitcoin consensus. A light node is read-only.
+Everything lives in ~/.tapseal (TAPSEAL_HOME): node.json, data/tapseal.sqlite, logs/.
+"""
+from __future__ import annotations
+
+import argparse
+import tempfile
+import shlex
+import plistlib
+import logging
+from logging.handlers import RotatingFileHandler
+import json
+import os
+import secrets
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+VERSION = "1.1.4-watch.2"
+HOME = Path(os.environ.get("TAPSEAL_HOME", Path.home() / ".tapseal")).expanduser()
+APP = Path(os.environ.get("TAPSEAL_APP", Path(__file__).resolve().parent.parent)).resolve()
+CONFIG = HOME / "node.json"
+SEEDS = [s for s in os.environ.get("TAPSEAL_SEEDS", "https://tapseal.xyz").split(",") if s.strip()]
+NETWORKS = ("mainnet", "testnet3", "testnet4", "testnet", "signet", "regtest")
+ESPLORA = {"mainnet": "https://mempool.space/api,https://blockstream.info/api", "testnet3": "https://mempool.space/testnet/api,https://blockstream.info/testnet/api",
+           "testnet4": "https://mempool.space/testnet4/api", "testnet": "https://mempool.space/testnet4/api",
+           "signet": "https://mempool.space/signet/api,https://blockstream.info/signet/api", "regtest": ""}
+
+B, D, G, Y, R, X = ("\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\033[0m") if sys.stdout.isatty() else ("",) * 6
+
+
+def say(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"{R}error:{X} {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def api_of(url: str) -> str:
+    u = url.strip().rstrip("/")
+    return u if u.endswith("/api/tapseal") else u + "/api/tapseal"
+
+
+def get_json(url: str, timeout: float = 10):
+    req = urllib.request.Request(url, headers={"accept": "application/json", "user-agent": f"tapseal-node/{VERSION}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body=r.read(128*1024+1)
+        if len(body)>128*1024:raise ValueError("node response too large")
+        return json.loads(body)
+
+
+def load() -> dict:
+    if not CONFIG.exists():
+        die(f"no node configured yet. Run: {B}tapseal-node init{X}")
+    return json.loads(CONFIG.read_text())
+
+
+def save(cfg: dict) -> None:
+    HOME.mkdir(parents=True,exist_ok=True,mode=0o700)
+    os.chmod(HOME,0o700)
+    fd,name=tempfile.mkstemp(prefix=".node-",dir=HOME)
+    try:
+        os.fchmod(fd,0o600)
+        with os.fdopen(fd,"w") as f:
+            json.dump(cfg,f,indent=2);f.write("\n");f.flush();os.fsync(f.fileno())
+        os.replace(name,CONFIG)
+    finally:
+        if os.path.exists(name):os.unlink(name)
+
+
+# ── init ─────────────────────────────────────────────────────────────────────
+
+def cmd_init(a) -> None:
+    if CONFIG.exists() and not a.force:
+        die(f"{CONFIG} already exists. Use --force to replace it (the indexed data is kept).")
+    seed = a.from_url or (SEEDS[0] if SEEDS else None)
+    network, start, peers = a.network, a.start, list(a.peer or [])
+    if seed and (network is None or start is None):
+        try:
+            st = get_json(api_of(seed) + "/status")
+            network = network or st["network"]
+            act = st.get("activation") if st.get("activation") is not None else (st.get("node") or {}).get("activation")
+            start = start if start is not None else act
+            say(f"{D}seed {seed}: {network}, indexing from block {start}, at block {st.get('tip', {}).get('height')}{X}")
+            if seed not in peers:
+                peers.append(seed)
+        except (urllib.error.URLError, OSError, KeyError, ValueError) as exc:
+            if network is None or start is None:
+                die(f"could not read settings from {seed} ({exc}). Pass --network and --start yourself.")
+    if network not in NETWORKS:
+        die(f"--network must be one of {', '.join(NETWORKS)}")
+    if not isinstance(start, int) or start < 0:
+        die("unknown start block: pass --start <first TAPSEAL block> or --from <a running node>")
+    mode = "full" if a.full else "light"
+    if mode == "light" and not (a.esplora or ESPLORA.get(network)):
+        die(f"no public block API known for {network}; pass --esplora URL")
+    if mode == "full" and not a.rpc_url:
+        die("a full node needs --rpc-url (and --rpc-user/--rpc-password or --rpc-bearer)")
+    old = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+    selected_db = old.get("db") if old.get("network")==network and old.get("start")==start else str(HOME/"data"/network/str(start)/"tapseal.sqlite")
+    cfg = {"version": VERSION, "node_id": old.get("node_id") or secrets.token_hex(8), "public_url": a.public_url or old.get("public_url", ""),
+           "network": network, "mode": mode, "start": start, "port": a.port,
+           "host": "0.0.0.0" if a.public else "127.0.0.1", "peers": peers, "serve_site": not a.no_site,
+           "esplora": a.esplora or ESPLORA[network], "rpc": {"url": a.rpc_url or "", "user": a.rpc_user or "",
+           "password": a.rpc_password or "", "bearer": a.rpc_bearer or ""},
+           "db": selected_db or str(HOME/"data"/network/str(start)/"tapseal.sqlite")}
+    save(cfg)
+    (HOME / "data").mkdir(parents=True, exist_ok=True)
+    (HOME / "logs").mkdir(parents=True, exist_ok=True)
+    say(f"{G}✓{X} {mode} node on {B}{network}{X}, indexing from block {start}, {len(peers)} peer(s)")
+    say(f"  config  {CONFIG}")
+    say(f"  start   {B}tapseal-node start{X}   then open http://{'localhost' if not a.public else '<this-host>'}:{a.port}")
+
+
+# ── start ────────────────────────────────────────────────────────────────────
+
+class Child:
+    """A supervised process: output prefixed and logged, restarted with backoff if it exits."""
+
+    def __init__(self, name, argv, env, log):
+        self.name, self.argv, self.env, self.log = name, argv, env, log
+        self.proc, self.restarts, self.stopping = None, 0, False
+
+    def run(self):
+        backoff = 2
+        while not self.stopping:
+            t0 = time.time()
+            # own process group: Ctrl+C or a service stop reaches only the supervisor, which stops the children in order
+            self.proc = subprocess.Popen(self.argv, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                         start_new_session=True)
+            handler=RotatingFileHandler(self.log,maxBytes=5*1024*1024,backupCount=3)
+            try:
+                for line in self.proc.stdout:
+                    handler.emit(logging.LogRecord(self.name,logging.INFO,"",0,line.rstrip(),(),None))
+                    say(f"{D}[{self.name}]{X} {line.rstrip()}")
+            finally:handler.close()
+            code = self.proc.wait()
+            if self.stopping:
+                return
+            backoff = 2 if time.time() - t0 > 60 else min(backoff * 2, 60)
+            self.restarts += 1
+            say(f"{Y}[{self.name}] exited ({code}); restarting in {backoff}s{X}")
+            time.sleep(backoff)
+
+    def stop(self):
+        self.stopping = True
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+def need(binary: str, hint: str) -> str:
+    p = shutil.which(binary)
+    if not p:
+        die(f"{binary} not found. {hint}")
+    return p
+
+
+def cmd_start(a) -> None:
+    cfg = load()
+    if not cfg.get("node_id"):                # configs from before the network map
+        cfg["node_id"] = secrets.token_hex(8); save(cfg)
+    py = sys.executable or need("python3", "Install Python 3.10+.")
+    node = need("node", "Install Node.js 20+ (https://nodejs.org).")
+    db = Path(cfg["db"]); db.parent.mkdir(parents=True, exist_ok=True)
+    logs = HOME / "logs"; logs.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "TAPSEAL_DB": str(db), "NETWORK": cfg["network"], "PYTHONUNBUFFERED": "1"}
+
+    idx = [py, str(APP / "indexer" / "tapseal_indexer.py"), "--db", str(db)]
+    if cfg["mode"] == "light":
+        idx += ["--esplora", cfg["esplora"], "--rps", str(cfg.get("rps", 4))]
+    else:
+        r = cfg["rpc"]
+        env.update(BITCOIN_RPC_URL=r["url"], BITCOIN_RPC_USER=r["user"], BITCOIN_RPC_PASSWORD=r["password"], BITCOIN_RPC_BEARER=r["bearer"])
+    idx += ["follow", "--network", cfg["network"], "--start", str(cfg["start"]), "--poll", str(cfg.get("poll", 15))]
+    if cfg["mode"] == "light":
+        idx += ["--mempool-budget", "0"]
+
+    api_env = {**env, "PORT": str(cfg["port"]), "HOST": cfg["host"], "NODE_MODE": cfg["mode"], "PEERS": ",".join(cfg["peers"]),
+               "PUBLIC_LAUNCH": "true" if cfg.get("public_launch", True) else "false", "ALLOWLIST_FILE": str(HOME / "data" / "allowlist.json"),
+               "WALLET_MONITOR_FILE": str(HOME / "data" / ("wallet-monitor-"+cfg["network"]+".json")), "NODE_ID": cfg["node_id"], "PUBLIC_URL": cfg.get("public_url", "")}
+    if cfg.get("serve_site", True) and (APP / "site" / "index.html").exists():
+        api_env["SITE_DIR"] = str(APP / "site")
+    indexer = Child("indexer", idx, env, logs / "indexer.log")
+    api = Child("api", [node, str(APP / "api" / "server.js")], api_env, logs / "api.log")
+
+    say(f"{B}TAPSEAL {cfg['mode']} node{X} {VERSION} · {cfg['network']} · from block {cfg['start']} · {len(cfg['peers'])} peer(s)")
+    if cfg["mode"] == "light":
+        say(f"{D}external block APIs (integrity checks only; not full Bitcoin consensus validation){X}")
+    threading.Thread(target=indexer.run, daemon=True).start()
+    for _ in range(300):                      # the API opens the database the indexer creates
+        if db.exists():
+            break
+        time.sleep(0.2)
+    threading.Thread(target=api.run, daemon=True).start()
+    say(f"{G}●{X} http://{'localhost' if cfg['host'] == '127.0.0.1' else cfg['host']}:{cfg['port']}  (API at /api/tapseal)")
+
+    done = threading.Event()
+    def stop(*_):
+        say("stopping…")
+        api.stop(); indexer.stop(); done.set()
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    while not done.wait(1):
+        pass
+
+
+# ── status / peers / service ─────────────────────────────────────────────────
+
+def local_api(cfg) -> str:
+    host = "127.0.0.1" if cfg["host"] in ("0.0.0.0", "127.0.0.1") else cfg["host"]
+    return f"http://{host}:{cfg['port']}/api/tapseal"
+
+
+def cmd_status(a) -> None:
+    cfg = load()
+    try:
+        st = get_json(local_api(cfg) + "/status", 5)
+        pe = get_json(local_api(cfg) + "/peers", 5)
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"node not running on port {cfg['port']} ({exc}). Start it with: tapseal-node start")
+    tip, node, c = st.get("tip") or {}, st.get("node") or {}, pe["summary"]
+    lag = node.get("lag")
+    if a.json:
+        print(json.dumps({"status": st, "peers": pe}, indent=2)); return
+    say(f"{B}TAPSEAL {st.get('mode')} node{X} · {st['network']}")
+    say(f"  block     {tip.get('height')}  {'(synced)' if lag == 0 else f'({lag} behind)' if lag is not None else ''}")
+    say(f"  root      {str(tip.get('root'))[:16]}…")
+    say(f"  tokens    via {local_api(cfg)}/tokens")
+    mark = {"agree": G + "●", "disagree": R + "✗", "solo": D + "○"}.get(c["state"], Y + "…")
+    say(f"  peers     {mark}{X} {c['agree']}/{c['peers']} agree" + (f", {R}{c['disagree']} disagree{X}" if c["disagree"] else ""))
+    checkins = pe.get("checkins") or {}
+    if checkins:
+        okc = sum(1 for c in checkins.values() if c.get("ok"))
+        say(f"  check-in  {okc}/{len(checkins)} peers accepted this node's check-in (so it shows on their map)")
+    for p in pe["peers"]:
+        col = G if p.get("agree") is True else R if p.get("agree") is False else D
+        say(f"            {col}{p.get('state', '?'):<14}{X} {p['url']}" + (f"  {D}{p.get('reason')}{X}" if p.get("reason") else ""))
+
+
+def cmd_peers(a) -> None:
+    cfg = load()
+    if a.action == "add":
+        u = a.url.rstrip("/")
+        try:
+            st = get_json(api_of(u) + "/status", 8)
+            if st.get("network") != cfg["network"]:
+                die(f"{u} is on {st.get('network')}, this node is on {cfg['network']}")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            say(f"{Y}warning:{X} {u} did not answer ({exc}); adding it anyway")
+        if u not in cfg["peers"]:
+            cfg["peers"].append(u)
+        save(cfg)
+        say(f"{G}✓{X} added {u}. Restart the node to use it.")
+    elif a.action == "remove":
+        cfg["peers"] = [p for p in cfg["peers"] if p.rstrip("/") != a.url.rstrip("/")]
+        save(cfg)
+        say(f"{G}✓{X} removed {a.url}. Restart the node to apply.")
+    else:
+        for p in cfg["peers"] or ["(none)"]:
+            say(p)
+
+
+# ── background service ───────────────────────────────────────────────────────
+# One supervisor process ("tapseal-node start") runs under the OS service manager, which starts it at boot or login
+# and restarts it if it stops. The supervisor restarts the indexer and API; both retry the network on their own,
+# so after sleep, Wi-Fi changes or an outage the node catches up and checks in with its peers again.
+
+LABEL = "xyz.tapseal.node"
+UNIT = "tapseal-node.service"
+
+
+def _platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        wsl = "microsoft" in Path("/proc/version").read_text().lower() if Path("/proc/version").exists() else False
+        systemd = shutil.which("systemctl") and subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True).returncode == 0
+        return ("wsl-" if wsl else "") + ("systemd" if systemd else "cron")
+    return "other"
+
+
+def _env_path() -> str:
+    """PATH for the service: service managers start with a bare PATH, so include where node and python live now."""
+    dirs = [str(Path(p).parent) for p in (shutil.which("node"), sys.executable) if p]
+    return ":".join(dict.fromkeys(dirs + ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]))
+
+
+def _systemd_quote(value: str) -> str:
+    if any(c in value for c in "\n\r\x00"):raise ValueError("invalid service path")
+    return '"'+value.replace('\\','\\\\').replace('"','\\"').replace('%','%%')+'"'
+
+
+def service_files(kind: str, exe: str) -> dict:
+    """What `service install` writes, per platform (also used by tests and --dry-run)."""
+    if kind.endswith("systemd"):
+        return {str(Path.home() / ".config/systemd/user" / UNIT): f"""[Unit]
+Description=TAPSEAL soft node
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Environment={_systemd_quote("TAPSEAL_HOME="+str(HOME))}
+Environment={_systemd_quote("PATH="+_env_path())}
+ExecStart={_systemd_quote(sys.executable)} {_systemd_quote(exe)} start
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
+"""}
+    if kind == "macos":
+        logs=HOME/"logs"
+        content={"Label":LABEL,"ProgramArguments":[sys.executable,exe,"start"],
+          "EnvironmentVariables":{"TAPSEAL_HOME":str(HOME),"PATH":_env_path()},
+          "RunAtLoad":True,"KeepAlive":True,"ThrottleInterval":10,"ProcessType":"Background",
+          "StandardOutPath":str(logs/"service.log"),"StandardErrorPath":str(logs/"service.log")}
+        return {str(Path.home()/"Library/LaunchAgents"/f"{LABEL}.plist"):plistlib.dumps(content).decode()}
+    return {}
+
+
+def _run(cmd: list, check=False) -> bool:
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode and check:
+        say(f"{Y}  {' '.join(cmd)} → {(r.stderr or r.stdout).strip()[:200]}{X}")
+    return r.returncode == 0
+
+
+def _cron_line(exe: str) -> str:
+    if any(c in str(HOME)+exe for c in "\n\r"):raise ValueError("invalid cron path")
+    return f"@reboot TAPSEAL_HOME={shlex.quote(str(HOME))} PATH={shlex.quote(_env_path())} {shlex.quote(sys.executable)} {shlex.quote(exe)} start >> {shlex.quote(str(HOME/'logs/service.log'))} 2>&1  # tapseal-node".replace("%","\\%")
+
+
+def _windows_task_args(exe: str) -> list:
+    distro=os.environ.get("WSL_DISTRO_NAME","Ubuntu");user=os.environ.get("USER","")
+    task=subprocess.list2cmdline(["wsl.exe","-d",distro,"-u",user,"--exec",sys.executable,exe,"start"])
+    return ["schtasks.exe","/Create","/F","/TN","TAPSEAL node","/SC","ONLOGON","/RL","LIMITED","/TR",task]
+
+
+def _windows_task(exe: str) -> str:
+    return subprocess.list2cmdline(_windows_task_args(exe))
+
+
+def cmd_service(a) -> None:
+    load()                                       # needs a configured node
+    exe = str(Path(sys.argv[0]).resolve())
+    kind = _platform()
+    files = service_files(kind, exe)
+    if a.action == "install" and a.dry_run:
+        for f, body in files.items():
+            say(f"{B}{f}{X}\n{body}")
+        if kind.endswith("cron"):
+            say(_cron_line(exe))
+        return
+
+    if a.action == "install":
+        (HOME / "logs").mkdir(parents=True, exist_ok=True)
+        for f, body in files.items():
+            Path(f).parent.mkdir(parents=True, exist_ok=True)
+            Path(f).write_text(body)
+            say(f"{G}✓{X} wrote {f}")
+        if kind.endswith("systemd"):
+            _run(["systemctl", "--user", "daemon-reload"], True)
+            ok = _run(["systemctl", "--user", "enable", "--now", UNIT], True)
+            linger = _run(["loginctl", "enable-linger", os.environ.get("USER", "")])
+            say(f"{G}✓{X} service {'running' if ok else 'installed'}; starts at boot" + ("" if linger else " after you log in"))
+            if not linger:
+                say(f"  to keep it running when you're logged out:  sudo loginctl enable-linger $USER")
+            say("  logs:  journalctl --user -u tapseal-node -f")
+        elif kind == "macos":
+            uid = str(os.getuid())
+            _run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"])
+            ok = _run(["launchctl", "bootstrap", f"gui/{uid}", next(iter(files))], True)
+            _run(["launchctl", "enable", f"gui/{uid}/{LABEL}"])
+            say(f"{G}✓{X} service {'running' if ok else 'installed'}; starts when you log in, restarts if it stops")
+            say(f"  logs:  tail -f {HOME}/logs/service.log")
+            say("  tip: System Settings → Battery → Options → \"Prevent automatic sleeping when the display is off\" keeps it online")
+        elif kind.endswith("cron"):
+            cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout if shutil.which("crontab") else None
+            if cur is None:
+                die("no systemd and no cron here. Use Docker (docker compose up -d) or run: nohup tapseal-node start &")
+            lines = [l for l in cur.splitlines() if "# tapseal-node" not in l] + [_cron_line(exe)]
+            subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True, check=True)
+            subprocess.Popen(["nohup", sys.executable, exe, "start"], stdout=open(HOME / "logs/service.log", "a"), stderr=subprocess.STDOUT, start_new_session=True,
+                             env={**os.environ, "TAPSEAL_HOME": str(HOME)})
+            say(f"{G}✓{X} started in the background and added to cron (@reboot)")
+        else:
+            die("unsupported system for a service. Use Docker: docker compose up -d")
+        if kind.startswith("wsl"):
+            say(f"\n{B}Windows:{X} WSL only runs while Windows has it open. To start the node when you sign in to Windows:")
+            task = _windows_task(exe)
+            if a.windows_task and shutil.which("schtasks.exe"):
+                ok = _run(_windows_task_args(exe), True)
+                say(f"{G}✓{X} Windows startup task created" if ok else f"{Y}could not create it; run this in Windows PowerShell:{X}\n  {task}")
+            else:
+                say(f"  run:  tapseal-node service install --windows-task\n  or in Windows PowerShell:\n  {task}")
+        return
+
+    if a.action == "remove":
+        if kind.endswith("systemd"):
+            _run(["systemctl", "--user", "disable", "--now", UNIT])
+        elif kind == "macos":
+            _run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"])
+        elif kind.endswith("cron") and shutil.which("crontab"):
+            cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+            subprocess.run(["crontab", "-"], input="\n".join(l for l in cur.splitlines() if "# tapseal-node" not in l) + "\n", text=True)
+            _run(["pkill", "-f", __import__("re").escape(f"{exe} start")])
+        for f in files:
+            Path(f).unlink(missing_ok=True)
+        if kind.startswith("wsl") and shutil.which("schtasks.exe"):
+            _run(["schtasks.exe", "/Delete", "/F", "/TN", "TAPSEAL node"])
+        say(f"{G}✓{X} service removed (your data in {HOME} is kept)")
+        return
+
+    # status
+    running = False
+    if kind.endswith("systemd"):
+        running = _run(["systemctl", "--user", "is-active", "--quiet", UNIT])
+    elif kind == "macos":
+        r = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"], capture_output=True, text=True)
+        running = r.returncode == 0 and "state = running" in r.stdout
+    else:
+        running = _run(["pgrep", "-f", f"{exe} start"])
+    installed = any(Path(f).exists() for f in files) or (kind.endswith("cron") and "# tapseal-node" in (subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout if shutil.which("crontab") else ""))
+    say(f"service ({kind}): {'installed' if installed else 'not installed'}, {G + 'running' + X if running else Y + 'not running' + X}")
+
+
+def main() -> None:
+    os.umask(0o077)
+    ap = argparse.ArgumentParser(prog="tapseal-node", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"tapseal-node {VERSION}")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    i = sub.add_parser("init", help="configure this node")
+    i.add_argument("--from", dest="from_url", help="copy network and start block from this running node (default: the seed node)")
+    i.add_argument("--network", choices=NETWORKS)
+    i.add_argument("--start", type=int, help="first TAPSEAL block to index")
+    i.add_argument("--full", action="store_true", help="full node on your own Bitcoin RPC (default: light)")
+    i.add_argument("--esplora", help="light mode block API (default: mempool.space for the network)")
+    i.add_argument("--rpc-url"); i.add_argument("--rpc-user"); i.add_argument("--rpc-password"); i.add_argument("--rpc-bearer")
+    i.add_argument("--peer", action="append", help="another node to compare state with (repeatable)")
+    i.add_argument("--port", type=int, default=8090)
+    i.add_argument("--public", action="store_true", help="listen on all interfaces (put it behind HTTPS)")
+    i.add_argument("--public-url", help="the address others reach this node at (shown on the network map), e.g. https://node.example.org")
+    i.add_argument("--no-site", action="store_true", help="API only, without the TAPSEAL website")
+    i.add_argument("--force", action="store_true")
+    sub.add_parser("start", help="run the node in the foreground")
+    s = sub.add_parser("status", help="show sync and peer agreement"); s.add_argument("--json", action="store_true")
+    p = sub.add_parser("peers", help="list, add or remove peers")
+    p.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list"); p.add_argument("url", nargs="?")
+    v = sub.add_parser("service", help="run as a background service (starts at boot/login, restarts if it stops)")
+    v.add_argument("action", nargs="?", choices=["install", "remove", "status"], default="status")
+    v.add_argument("--dry-run", action="store_true", help="show what install would write")
+    v.add_argument("--windows-task", action="store_true", help="WSL: also create a Windows sign-in task that starts the node")
+    a = ap.parse_args()
+    if a.cmd == "peers" and a.action in ("add", "remove") and not a.url:
+        ap.error(f"peers {a.action} needs a URL")
+    {"init": cmd_init, "start": cmd_start, "status": cmd_status, "peers": cmd_peers, "service": cmd_service}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()

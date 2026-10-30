@@ -1,0 +1,32 @@
+name: source-tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/api/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        working-directory: backend/api
+      - run: npm test
+        working-directory: backend/api
+      - run: python3 -m unittest discover -s backend/protocol -p 'test_*.py'
+      - run: python3 -m unittest discover -s backend/indexer -p 'test_*.py'
+        env:
+          PYTHONPATH: backend/protocol:backend/indexer
+      - run: python3 -m unittest discover -s softnode -p test_security.py
+      - run: python3 softnode/build-release.py
+      - run: cp artifacts/tapseal-node-1.1.4-watch.2.tar.gz /tmp/first-build.tar.gz
+      - run: python3 softnode/build-release.py
+      - run: cmp /tmp/first-build.tar.gz artifacts/tapseal-node-1.1.4-watch.2.tar.gz
