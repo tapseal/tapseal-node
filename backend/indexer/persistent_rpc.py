@@ -3,6 +3,24 @@ import base64,json,os,time,urllib.error,urllib.request
 from collections import deque
 from email.utils import parsedate_to_datetime
 
+MAX_RESPONSE_BYTES=64*1024*1024
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*_args):
+        raise RpcLimit('Bitcoin RPC redirects are refused.',code='redirect')
+def _urlopen(request,timeout):
+    return urllib.request.build_opener(NoRedirect()).open(request,timeout=timeout)
+
+def _read_json(response,limit=MAX_RESPONSE_BYTES):
+    parts=[];total=0
+    read=getattr(response,'read1',response.read)
+    while True:
+        chunk=read(min(65536,limit-total+1))
+        if not chunk:break
+        total+=len(chunk)
+        if total>limit:raise RpcLimit('Bitcoin RPC response exceeds size limit.',code='response_limit')
+        parts.append(chunk)
+    return json.loads(b''.join(parts))
+
 class RpcLimit(RuntimeError):
     def __init__(self,message,code=None,retry_after=0):
         super().__init__(message);self.code=code;self.retry_after=retry_after
@@ -39,8 +57,9 @@ class Rpc:
             if attempt:self.total_retries+=1
             retry=False
             try:
-                with urllib.request.urlopen(req,timeout=timeout) as response:payload=json.loads(response.read())
+                with _urlopen(req,timeout=timeout) as response:payload=_read_json(response)
             except urllib.error.HTTPError as exc:
+                if 300<=exc.code<400:raise RpcLimit('Bitcoin RPC redirects are refused.',code='redirect') from None
                 if exc.code==429:
                     raw=exc.headers.get('Retry-After','5') if exc.headers else '5'
                     try:wait=float(raw)
@@ -51,10 +70,10 @@ class Rpc:
                     raise RpcLimit('Bitcoin RPC rate limited (HTTP 429).',code=429,retry_after=wait) from None
                 if exc.code in (502,503,504):retry=True
                 else:
-                    try:payload=json.loads(exc.read())
-                    except (ValueError,UnicodeError):raise RpcLimit(f'Bitcoin RPC HTTP {exc.code}.',code=exc.code) from None
+                    try:payload=_read_json(exc,limit=128*1024)
+                    except (ValueError,UnicodeError,RecursionError):raise RpcLimit(f'Bitcoin RPC HTTP {exc.code}.',code=exc.code) from None
             except (urllib.error.URLError,TimeoutError,OSError):retry=True
-            except (ValueError,UnicodeError):raise RpcLimit('Bitcoin RPC returned invalid JSON.') from None
+            except (ValueError,UnicodeError,RecursionError):raise RpcLimit('Bitcoin RPC returned invalid JSON.') from None
             if retry:
                 if attempt<self.max_retries:self._wait(2**attempt);continue
                 raise RpcLimit('Bitcoin RPC temporarily unavailable.')

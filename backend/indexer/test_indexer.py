@@ -90,6 +90,27 @@ class Indexer(unittest.TestCase):
     def db(self, name):
         return os.path.join(self.tmp, name)
 
+    def test_same_height_reorg_replays_without_waiting_for_next_block(self):
+        rpc=FakeRpc();rpc.blocks,_=chain("a")
+        store=IX.Store(self.db("same.sqlite"));st=store.load_state()
+        IX.sync(rpc,store,st,100,log=lambda m:None)
+        rpc.blocks,_=chain("b");rpc.blocks=rpc.blocks[:-1]
+        IX.sync(rpc,store,st,100,log=lambda m:None)
+        fresh_store=IX.Store(self.db("same-fresh.sqlite"));fresh=fresh_store.load_state()
+        IX.sync(rpc,fresh_store,fresh,100,log=lambda m:None)
+        self.assertEqual(st.root(),fresh.root());self.assertEqual(store.tip()[1],rpc.blocks[-1]["hash"])
+
+    def test_wrong_block_height_or_hash_is_not_applied(self):
+        rpc=FakeRpc();rpc.blocks,_=chain("a")
+        original=rpc.call
+        def bad(method,*params):
+            answer=original(method,*params)
+            return {**answer,"height":999} if method=="getblock" else answer
+        rpc.call=bad
+        store=IX.Store(self.db("wrong.sqlite"));st=store.load_state()
+        with self.assertRaisesRegex(RuntimeError,"inconsistent block"):IX.sync(rpc,store,st,100,log=lambda m:None)
+        self.assertIsNone(store.tip())
+
     def test_replay_persist_and_reload(self):
         rpc = FakeRpc(); rpc.blocks, _ = chain("a")
         store = IX.Store(self.db("a.sqlite")); st = store.load_state()

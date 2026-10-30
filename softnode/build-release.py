@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build the home runtime from this checkout, without the public website or network access."""
 from pathlib import Path
-import gzip,hashlib,io,json,os,re,shutil,tarfile
+import gzip,hashlib,io,json,os,re,shutil,tarfile,subprocess,sys
 ROOT=Path(__file__).resolve().parent.parent
+subprocess.run([sys.executable,str(ROOT/'scripts/check-source.py')],cwd=ROOT,check=True)
 version=re.search(r'^VERSION = "([A-Za-z0-9.-]+)"',(ROOT/'softnode/tapseal-node').read_text(),re.M)[1]
 name='tapseal-node-'+version;out=ROOT/'artifacts';out.mkdir(exist_ok=True);stage=out/name
 if stage.exists():shutil.rmtree(stage)

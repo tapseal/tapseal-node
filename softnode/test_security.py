@@ -35,4 +35,34 @@ class Security(unittest.TestCase):
    self.assertIn('/testnet3/100/',new['db']);self.assertEqual(old.read_text(),'preserved');self.assertEqual(module.CONFIG.stat().st_mode&0o777,0o600)
    exe=str(module.HOME/'app/bin/tapseal-node');pl=plistlib.loads(next(iter(module.service_files('macos',exe).values())).encode());self.assertEqual(pl['ProgramArguments'][1],exe)
    self.assertIsInstance(module._windows_task_args(exe),list)
+ def test_single_instance_lock_prevents_duplicate_writers(self):
+  loader=importlib.machinery.SourceFileLoader('node_lock',str(ROOT/'softnode/tapseal-node'));spec=importlib.util.spec_from_loader(loader.name,loader);module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+  with tempfile.TemporaryDirectory() as d:
+   module.HOME=Path(d)/'home';first=module.instance_lock()
+   try:
+    with self.assertRaises(RuntimeError):module.instance_lock()
+   finally:first.close()
+   later=module.instance_lock();later.close()
+ def test_remote_seed_refuses_plaintext_credentials_and_redirects(self):
+  loader=importlib.machinery.SourceFileLoader('node_remote',str(ROOT/'softnode/tapseal-node'));spec=importlib.util.spec_from_loader(loader.name,loader);module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+  for url in ['http://example.com/status','https://user:secret@example.com/status','https://example.com:8443/status']:
+   with self.assertRaises(ValueError):module.remote_json(url)
+  with self.assertRaises(module.urllib.error.URLError):module.NoRedirect().redirect_request()
+
+ def test_remote_rpc_does_not_send_credentials_over_plain_http(self):
+  loader=importlib.machinery.SourceFileLoader('node_rpc_url',str(ROOT/'softnode/tapseal-node'));spec=importlib.util.spec_from_loader(loader.name,loader);module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+  for url in ['http://rpc.example:8332','https://user:secret@rpc.example']:
+   with self.assertRaises(ValueError):module.validate_rpc_url(url)
+  self.assertEqual(module.validate_rpc_url('http://127.0.0.1:8332'),'http://127.0.0.1:8332')
+  self.assertEqual(module.validate_rpc_url('https://rpc.example/key'),'https://rpc.example/key')
+ def test_source_guard_rejects_credentials_and_private_runtime_files(self):
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);(root/'scripts').mkdir();script=root/'scripts/check-source.py';shutil.copy2(ROOT/'scripts/check-source.py',script)
+   leaked='ghp_'+'A'*36;(root/'bad.txt').write_text(leaked)
+   out=subprocess.run([sys.executable,str(script)],capture_output=True,text=True)
+   self.assertNotEqual(out.returncode,0);self.assertNotIn(leaked,out.stdout+out.stderr)
+   (root/'bad.txt').unlink();(root/'node.json').write_text('{}')
+   out=subprocess.run([sys.executable,str(script)],capture_output=True,text=True)
+   self.assertNotEqual(out.returncode,0)
+
 if __name__=='__main__':unittest.main()

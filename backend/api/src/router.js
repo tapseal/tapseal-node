@@ -1,5 +1,6 @@
 // /api/tapseal routes. Mount with: app.use('/api/tapseal', createRouter(config))
 const express = require('express');
+const {boundedFetch}=require('./bounded-fetch');
 const ts = require('./tapseal');
 const builders = require('./psbt');
 const dbm = require('./db');
@@ -25,7 +26,7 @@ function createRouter(cfg) {
   const readOnly = cfg.mode === 'light';
   const nodeIdEarly = cfg.nodeId || require('crypto').createHash('sha256').update(`${require('os').hostname()}|${cfg.dbPath}`).digest('hex').slice(0, 16);
   const peers = cfg.peersInstance || createPeers({ peers: cfg.peers || [], db, network: net, intervalMs: cfg.peerIntervalMs, fetchImpl: cfg.peerFetchImpl,
-    announce: cfg.announce === false ? null : { id: nodeIdEarly, mode: cfg.mode || 'full', url: cfg.publicUrl || null, version: cfg.version || '1.1.2-security.1' } });
+    announce: cfg.announce === false ? null : { id: nodeIdEarly, mode: cfg.mode || 'full', url: cfg.publicUrl || null, version: cfg.version || '1.1.5-security.1' } });
   const announcements = createAnnouncements({ db, network: net });
   if (cfg.peerCheck !== false) peers.start();
   const rootAt = db.raw.prepare('select height, hash, root from blocks where height = ?');
@@ -72,7 +73,7 @@ function createRouter(cfg) {
   async function utxosFor(req, address) {
     const given = builders.cleanUtxos(req.body.utxos, builders.DUST + 1);
     if (given.length) return { utxos: given, source: 'wallet' };
-    const res = await fetch(`${cfg.mempoolApi}/address/${address}/utxo`);
+    const res = await boundedFetch(`${cfg.mempoolApi}/address/${encodeURIComponent(address)}/utxo`,{maxBytes:2*1024*1024});
     if (!res.ok) throw new Error(`Could not load UTXOs (${res.status}).`);
     // Without wallet-supplied UTXOs we can't see inscriptions/runes, so skip small coins that may carry them.
     return { utxos: builders.cleanUtxos(await res.json(), cfg.minServerUtxo), source: 'mempool.space' };
@@ -121,7 +122,7 @@ function createRouter(cfg) {
   r.get('/status', (req, res) => {
     const tip = db.tip();
     const node = db.node();
-    send(res, { ok: true, api_version:'1.1.2-security.1', protocol_version:'1.1.0-draft.1', root_scope:'seal-outputs-v1', validation:readOnly?'external-api-integrity-checks':'configured-bitcoin-rpc', network: net, tip, node, node_id: nodeId, public_url: cfg.publicUrl || null, mode: cfg.mode || node.mode || 'full', read_only: readOnly, consensus: peers.summary(),
+    send(res, { ok: true, api_version:'1.1.5-security.1', protocol_version:'1.1.0-draft.1', root_scope:'seal-outputs-v1', validation:readOnly?'external-api-integrity-checks':'configured-bitcoin-rpc', network: net, tip, node, node_id: nodeId, public_url: cfg.publicUrl || null, mode: cfg.mode || node.mode || 'full', read_only: readOnly, consensus: peers.summary(),
       activation: node.activation ?? null, mempool_ops: db.mempoolCount(), public_launch: cfg.publicLaunch,
       owners: cfg.publicLaunch ? undefined : cfg.ownerAddresses, featured: cfg.featured, platform_fee_sats: cfg.platformFee.sats || 0 });
   });
@@ -313,21 +314,28 @@ function createRouter(cfg) {
   }));
 
   // ── broadcast ─────────────────────────────────────────────────────────────
+  let activeBroadcasts=0;
   r.post('/broadcast', limit, wrap(async (req) => {
+    if(activeBroadcasts>=4)throw new Error('Broadcast capacity reached. Retry shortly.');
+    activeBroadcasts++;
+    try{
     const tx = builders.extract(req.body.psbt || req.body.rawtx, net);
     const hex = tx.toHex();
     let txid;
     if (cfg.rpc.url) {
       const auth = cfg.rpc.bearer ? `Bearer ${cfg.rpc.bearer}` : cfg.rpc.user ? `Basic ${Buffer.from(`${cfg.rpc.user}:${cfg.rpc.password}`).toString('base64')}` : undefined;
-      const out = await fetch(cfg.rpc.url, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth ? { authorization: auth } : {}) },
-        body: JSON.stringify({ jsonrpc: '1.0', id: 'tapseal', method: 'sendrawtransaction', params: [hex] }) }).then((x) => x.json());
-      if (out.error) throw new Error(out.error.message || JSON.stringify(out.error));
+      const reply = await boundedFetch(cfg.rpc.url, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth ? { authorization: auth } : {}) },
+        body: JSON.stringify({ jsonrpc: '1.0', id: 'tapseal', method: 'sendrawtransaction', params: [hex] }) });
+      const out=await reply.json();
+      if (out.error) throw new Error('Bitcoin RPC rejected transaction ('+String(out.error.code??'unknown')+').');
+      if(!reply.ok)throw new Error('Bitcoin RPC relay unavailable.');
       txid = out.result;
     } else {
-      const out = await fetch(`${cfg.mempoolApi}/tx`, { method: 'POST', body: hex });
-      if (!out.ok) throw new Error(await out.text());
+      const out = await boundedFetch(`${cfg.mempoolApi}/tx`, { method: 'POST', body: hex });
+      if (!out.ok) throw new Error('Transaction relay rejected the request ('+out.status+').');
       txid = (await out.text()).trim();
     }
+    if(typeof txid!=='string'||txid!==tx.getId())throw new Error('Relay returned a different transaction ID; verify the transaction before retrying.');
     const sniff = ts.sniffPayload(tx);
     if (sniff) {
       const tok = sniff.tick ? db.token(sniff.tick) : null;
@@ -337,6 +345,7 @@ function createRouter(cfg) {
         fee_rate: feeIn ? Math.round((feeIn / tx.virtualSize()) * 100) / 100 : null, vsize: tx.virtualSize(), bytes: sniff.bytes, source: 'api', paid });
     }
     return { txid, vsize: tx.virtualSize() };
+    }finally{activeBroadcasts--;}
   }));
 
   return r;

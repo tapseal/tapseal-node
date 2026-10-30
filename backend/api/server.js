@@ -27,7 +27,8 @@ const config = {
 config.previewRequireRpc = true; // Required for production input/admission checks.
 const app = express();
 app.set('trust proxy', 'loopback');
-app.use(cors({ origin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',') : true }));
+if(env.HOME_NODE === 'true')app.use(require('./src/home-security').homeGuard({siteDir:env.SITE_DIR,publicUrl:config.publicUrl}));
+app.use(cors({ origin: env.HOME_NODE === 'true' ? false : env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',') : true }));
 app.disable('x-powered-by');
 app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');next();});
 app.use(express.json({ limit: '256kb' }));

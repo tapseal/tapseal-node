@@ -42,58 +42,6 @@ DEFAULT_MEMPOOL_BUDGET = 150   # getrawtransaction calls per mempool scan
 
 # ───────────────────────────────────────────────────────────────── RPC ──
 
-class Rpc:
-    def __init__(self, url, user="", password="", bearer="", rps=20):
-        self.url, self.seq, self.delay, self.last = url, 0, 1.0 / max(1.0, float(rps)), 0.0
-        self.lat = deque(maxlen=50)
-        self.headers = {"Content-Type": "application/json", "User-Agent": "tapseal-indexer/1"}
-        if bearer:
-            self.headers["Authorization"] = f"Bearer {bearer}"
-        elif user or password:
-            self.headers["Authorization"] = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
-
-    def call(self, method, *params):
-        wait = self.delay - (time.time() - self.last)
-        if wait > 0:
-            time.sleep(wait)
-        self.last = time.time()
-        self.seq += 1
-        body = json.dumps({"jsonrpc": "1.0", "id": self.seq, "method": method, "params": list(params)}).encode()
-        req = urllib.request.Request(self.url, data=body, headers=self.headers)
-        t0 = time.time()
-        for attempt in range(4):
-            try:
-                with urllib.request.urlopen(req, timeout=60) as res:
-                    payload = json.loads(res.read())
-                break
-            except urllib.error.HTTPError as exc:
-                text = exc.read().decode("utf-8", "replace")
-                try:  # bitcoind returns 500 with a JSON error body for RPC errors
-                    payload = json.loads(text)
-                    break
-                except ValueError:
-                    pass
-                if exc.code in (429, 502, 503, 504) and attempt < 3:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise RuntimeError(f"RPC HTTP {exc.code}: {text[:200]}") from exc
-            except (urllib.error.URLError, TimeoutError) as exc:
-                if attempt < 3:
-                    time.sleep(2 ** attempt)
-                    continue
-                raise RuntimeError(f"RPC unreachable: {exc}") from exc
-        self.lat.append((time.time() - t0) * 1000)
-        if payload.get("error"):
-            raise RuntimeError(f"{method}: {payload['error']}")
-        return payload["result"]
-
-    def latency_ms(self):
-        return round(sum(self.lat) / len(self.lat), 1) if self.lat else None
-
-
-# ──────────────────────────────────────────────────────────── storage ──
-
-# PERSISTENT_INDEXING_V2
 from persistent_rpc import Rpc  # bounded HTTP attempts and rate limiting
 
 SCHEMA = """
@@ -342,11 +290,18 @@ def fee_estimates(rpc: Rpc) -> dict:
 def sync(rpc: Rpc, store: Store, st: T.State, start: int, log=print) -> int:
     tip = rpc.call("getblockcount")
     cur = store.tip()
+    # A same-height reorg must be recognized even if no new block arrives.
+    while cur and (cur[0] > tip or cur[1] != rpc.call("getblockhash", cur[0])):
+        log(f"canonical tip changed at {cur[0]}; rolling back stored block")
+        store.rollback_tip(st)
+        cur = store.tip()
     h = (cur[0] + 1) if cur else start
     processed = 0
     while h <= tip:
         bhash = rpc.call("getblockhash", h)
         block = rpc.call("getblock", bhash, 2)
+        if block.get("hash") != bhash or block.get("height") != h:
+            raise RuntimeError("RPC returned inconsistent block height/hash; block not applied.")
         prev = store.hash_at(h - 1)
         if prev is not None and block.get("previousblockhash") != prev:
             log(f"reorg at {h}: stored {prev[:16]}… != {block.get('previousblockhash', '')[:16]}…, rolling back {h - 1}")

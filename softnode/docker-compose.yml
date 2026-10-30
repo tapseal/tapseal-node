@@ -2,11 +2,11 @@
 # Light node configured from the seed node. To choose yourself, set for example:
 #   TAPSEAL_INIT_ARGS: "--network testnet3 --start 4400000 --peer https://tapseal.xyz"
 # Full node on your own Bitcoin RPC:
-#   TAPSEAL_INIT_ARGS: "--full --network mainnet --start 900000 --rpc-url http://host.docker.internal:8332 --rpc-user u --rpc-password p"
+#   TAPSEAL_INIT_ARGS: "--full --network mainnet --start 900000 --rpc-url https://YOUR-PRIVATE-RPC-HOST --rpc-user u --rpc-password p"
 services:
   tapseal-node:
     build: .
-    image: tapseal-node:1.1.4-watch.2
+    image: tapseal-node:1.1.5-security.1
     restart: unless-stopped
     ports: ["127.0.0.1:8090:8090"]
     volumes: ["tapseal:/data"]

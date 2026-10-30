@@ -17,6 +17,8 @@ Everything lives in ~/.tapseal (TAPSEAL_HOME): node.json, data/tapseal.sqlite, l
 from __future__ import annotations
 
 import argparse
+import fcntl
+import urllib.parse
 import tempfile
 import shlex
 import plistlib
@@ -35,7 +37,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.1.4-watch.2"
+VERSION = "1.1.5-security.1"
 HOME = Path(os.environ.get("TAPSEAL_HOME", Path.home() / ".tapseal")).expanduser()
 APP = Path(os.environ.get("TAPSEAL_APP", Path(__file__).resolve().parent.parent)).resolve()
 CONFIG = HOME / "node.json"
@@ -70,10 +72,40 @@ def get_json(url: str, timeout: float = 10):
         return json.loads(body)
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args):
+        raise urllib.error.URLError("remote node redirects are refused")
+
+
+def remote_json(url: str):
+    u=urllib.parse.urlsplit(url)
+    if u.scheme!="https" or not u.hostname or u.username or u.password or u.query or u.fragment or u.port not in (None,443):
+        raise ValueError("remote node endpoints require HTTPS port 443 without credentials/query/fragment")
+    request=urllib.request.Request(url,headers={"accept":"application/json","user-agent":f"tapseal-node/{VERSION}"})
+    with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
+        body=response.read(128*1024+1)
+        if len(body)>128*1024:raise ValueError("node response too large")
+        return json.loads(body)
+
+
+def validate_rpc_url(value):
+    u=urllib.parse.urlsplit(value)
+    if u.scheme not in ("http","https") or not u.hostname or u.username or u.password or u.fragment:
+        raise ValueError("RPC requires HTTP(S) without embedded credentials or fragments")
+    if u.scheme=="http" and u.hostname not in ("localhost","127.0.0.1","::1"):
+        raise ValueError("Remote RPC requires HTTPS; use a loopback SSH tunnel for Bitcoin Core")
+    return value
+
+
 def load() -> dict:
     if not CONFIG.exists():
         die(f"no node configured yet. Run: {B}tapseal-node init{X}")
-    return json.loads(CONFIG.read_text())
+    if CONFIG.is_symlink() or CONFIG.stat().st_size>128*1024:
+        die("Unsafe node configuration file.")
+    cfg=json.loads(CONFIG.read_text())
+    if cfg.get("network") not in NETWORKS or cfg.get("mode") not in ("light","full") or type(cfg.get("start")) is not int or cfg["start"]<0 or type(cfg.get("port")) is not int or not 1<=cfg["port"]<=65535:
+        die("Invalid node configuration values.")
+    return cfg
 
 
 def save(cfg: dict) -> None:
@@ -98,7 +130,7 @@ def cmd_init(a) -> None:
     network, start, peers = a.network, a.start, list(a.peer or [])
     if seed and (network is None or start is None):
         try:
-            st = get_json(api_of(seed) + "/status")
+            st = remote_json(api_of(seed) + "/status")
             network = network or st["network"]
             act = st.get("activation") if st.get("activation") is not None else (st.get("node") or {}).get("activation")
             start = start if start is not None else act
@@ -112,11 +144,13 @@ def cmd_init(a) -> None:
         die(f"--network must be one of {', '.join(NETWORKS)}")
     if not isinstance(start, int) or start < 0:
         die("unknown start block: pass --start <first TAPSEAL block> or --from <a running node>")
+    if type(a.port) is not int or not 1<=a.port<=65535:die("port must be between 1 and 65535")
     mode = "full" if a.full else "light"
     if mode == "light" and not (a.esplora or ESPLORA.get(network)):
         die(f"no public block API known for {network}; pass --esplora URL")
     if mode == "full" and not a.rpc_url:
         die("a full node needs --rpc-url (and --rpc-user/--rpc-password or --rpc-bearer)")
+    if mode=="full":validate_rpc_url(a.rpc_url)
     old = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
     selected_db = old.get("db") if old.get("network")==network and old.get("start")==start else str(HOME/"data"/network/str(start)/"tapseal.sqlite")
     cfg = {"version": VERSION, "node_id": old.get("node_id") or secrets.token_hex(8), "public_url": a.public_url or old.get("public_url", ""),
@@ -180,12 +214,28 @@ def need(binary: str, hint: str) -> str:
     return p
 
 
+def instance_lock():
+    HOME.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if HOME.is_symlink() or HOME.stat().st_uid!=os.getuid():raise RuntimeError("Node home must be an owned real directory.")
+    HOME.chmod(0o700)
+    lockfd=os.open(HOME/"run.lock",os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+    handle=os.fdopen(lockfd,"w")
+    try:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise RuntimeError("This node home is already running. Stop its service before starting another instance.") from None
+    return handle
+
+
 def cmd_start(a) -> None:
+    if os.geteuid()==0:die("Run the home node as your regular user, not root.")
+    try:instance_handle=instance_lock()
+    except (OSError,RuntimeError):die("Node home is unsafe or already running. Stop its service before starting another instance.")
     cfg = load()
     if not cfg.get("node_id"):                # configs from before the network map
         cfg["node_id"] = secrets.token_hex(8); save(cfg)
     py = sys.executable or need("python3", "Install Python 3.10+.")
-    node = need("node", "Install Node.js 20+ (https://nodejs.org).")
+    node = need("node", "Install Node.js 22+ (https://nodejs.org).")
     db = Path(cfg["db"]); db.parent.mkdir(parents=True, exist_ok=True)
     logs = HOME / "logs"; logs.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "TAPSEAL_DB": str(db), "NETWORK": cfg["network"], "PYTHONUNBUFFERED": "1"}
@@ -195,14 +245,15 @@ def cmd_start(a) -> None:
         idx += ["--esplora", cfg["esplora"], "--rps", str(cfg.get("rps", 4))]
     else:
         r = cfg["rpc"]
+        validate_rpc_url(r["url"])
         env.update(BITCOIN_RPC_URL=r["url"], BITCOIN_RPC_USER=r["user"], BITCOIN_RPC_PASSWORD=r["password"], BITCOIN_RPC_BEARER=r["bearer"])
     idx += ["follow", "--network", cfg["network"], "--start", str(cfg["start"]), "--poll", str(cfg.get("poll", 15))]
     if cfg["mode"] == "light":
         idx += ["--mempool-budget", "0"]
 
-    api_env = {**env, "PORT": str(cfg["port"]), "HOST": cfg["host"], "NODE_MODE": cfg["mode"], "PEERS": ",".join(cfg["peers"]),
-               "PUBLIC_LAUNCH": "true" if cfg.get("public_launch", True) else "false", "ALLOWLIST_FILE": str(HOME / "data" / "allowlist.json"),
-               "WALLET_MONITOR_FILE": str(HOME / "data" / ("wallet-monitor-"+cfg["network"]+".json")), "NODE_ID": cfg["node_id"], "PUBLIC_URL": cfg.get("public_url", "")}
+    api_env = {**env, "PYTHON_BIN": py, "PORT": str(cfg["port"]), "HOST": cfg["host"], "NODE_MODE": cfg["mode"], "PEERS": ",".join(cfg["peers"]),
+               "HOME_NODE": "true", "PUBLIC_LAUNCH": "true" if cfg.get("public_launch", True) else "false", "ALLOWLIST_FILE": str(HOME / "data" / "allowlist.json"),
+               "WALLET_MONITOR_FILE": str(HOME / "data" / ("wallet-monitor-"+cfg["network"]+"-"+str(cfg["start"])+".json")), "NODE_ID": cfg["node_id"], "PUBLIC_URL": cfg.get("public_url", "")}
     if cfg.get("serve_site", True) and (APP / "site" / "index.html").exists():
         api_env["SITE_DIR"] = str(APP / "site")
     indexer = Child("indexer", idx, env, logs / "indexer.log")
@@ -267,10 +318,12 @@ def cmd_peers(a) -> None:
     if a.action == "add":
         u = a.url.rstrip("/")
         try:
-            st = get_json(api_of(u) + "/status", 8)
+            st = remote_json(api_of(u) + "/status")
             if st.get("network") != cfg["network"]:
                 die(f"{u} is on {st.get('network')}, this node is on {cfg['network']}")
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except ValueError:
+            die("Invalid peer endpoint or response; peer not saved.")
+        except (urllib.error.URLError, OSError) as exc:
             say(f"{Y}warning:{X} {u} did not answer ({exc}); adding it anyway")
         if u not in cfg["peers"]:
             cfg["peers"].append(u)

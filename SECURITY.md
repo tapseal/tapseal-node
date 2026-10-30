@@ -19,3 +19,7 @@ Do not put an unpatched exploitable issue or secrets into a public issue. Use th
 - The transaction preview tip-race patch retains exact canonical-tip equality and bounded retries. A new block or stale indexer can still require rebuilding.
 
 See docs/SECURITY-REVIEW-2026-10-30.md for the earlier scoped review and its unresolved limitations. That report predates some monitoring/preview changes and is not an independent audit of this full release.
+
+## Additional hardening
+
+See docs/SECURITY-HARDENING-V2.md for the 1.1.5-security.1 changes and evidence. Home requests are origin/Host constrained with a script-hash CSP. Duplicate supervisors are refused, watch snapshots commit atomically from a consistent DB read, upstream RPC redirects are refused and responses bounded, and CI uses immutable action commits. These protections do not authenticate peer identity, fully validate Bitcoin, sign releases, or protect a compromised user account/OS.

@@ -2,7 +2,7 @@
 # TAPSEAL audited user-local installer. Published bootstrap pins one release hash.
 set -eu
 umask 077
-RELEASE_URL="${TAPSEAL_RELEASE_URL:-https://tapseal.xyz/node/tapseal-node-1.1.4-watch.2.tar.gz}"
+RELEASE_URL="${TAPSEAL_RELEASE_URL:-https://tapseal.xyz/node/tapseal-node-1.1.5-security.1.tar.gz}"
 RELEASE_SHA256="${TAPSEAL_RELEASE_SHA256:-__PINNED_RELEASE_SHA256__}"
 HOME_DIR="${TAPSEAL_HOME:-$HOME/.tapseal}"
 BIN_DIR="${TAPSEAL_BIN:-$HOME/.local/bin}"

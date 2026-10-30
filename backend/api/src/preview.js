@@ -2,9 +2,10 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const ts = require('./tapseal');
+const {boundedFetch}=require('./bounded-fetch');
 function pythonPreview(dbPath, request, timeoutMs=20000) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(process.env.PYTHON_BIN || '/usr/bin/python3', [path.resolve(__dirname, '../..', 'protocol/preview.py'), dbPath], {stdio:['pipe','pipe','pipe']});
+    const proc = spawn(process.env.PYTHON_BIN || 'python3', [path.resolve(__dirname, '../..', 'protocol/preview.py'), dbPath], {stdio:['pipe','pipe','pipe']});
     let text='', bytes=0, ended=false;
     const timer=setTimeout(()=>{ proc.kill(); reject(new Error('Protocol preview timed out.')); },timeoutMs);
     proc.on('error', e=>{clearTimeout(timer);reject(e);});
@@ -17,7 +18,7 @@ function pythonPreview(dbPath, request, timeoutMs=20000) {
 async function rpc(cfg, method, params, timeoutMs=15000) {
   if(!cfg.rpc?.url) throw new Error('Bitcoin RPC is required for live input verification.');
   const auth=cfg.rpc.bearer?'Bearer '+cfg.rpc.bearer:cfg.rpc.user?'Basic '+Buffer.from(cfg.rpc.user+':'+cfg.rpc.password).toString('base64'):null;
-  const response=await fetch(cfg.rpc.url,{method:'POST',headers:{'content-type':'application/json',...(auth?{authorization:auth}:{})},body:JSON.stringify({jsonrpc:'1.0',id:'preview',method,params}),signal:AbortSignal.timeout(timeoutMs)});
+  const response=await boundedFetch(cfg.rpc.url,{method:'POST',headers:{'content-type':'application/json',...(auth?{authorization:auth}:{})},body:JSON.stringify({jsonrpc:'1.0',id:'preview',method,params}),timeoutMs});
   if(!response.ok)throw new Error('Bitcoin RPC verification unavailable.');
   const data=await response.json(); if(data.error)throw new Error('Bitcoin RPC rejected '+method+'.');return data.result;
 }

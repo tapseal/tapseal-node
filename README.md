@@ -25,7 +25,7 @@ From this repository's root:
 
 ```bash
 python3 softnode/build-release.py
-bash artifacts/tapseal-node-1.1.4-watch.2/install.sh
+bash artifacts/tapseal-node-1.1.5-security.1/install.sh
 ~/.local/bin/tapseal-node service install
 ~/.local/bin/tapseal-node status
 ```
@@ -33,7 +33,7 @@ bash artifacts/tapseal-node-1.1.4-watch.2/install.sh
 The build itself does not download executable code. The installer installs locked npm dependencies, then initializes settings from the configured seed. Run as your regular user, without sudo. Inspect scripts before execution. Open http://localhost:8090 and add a public address to the watch-only monitor. The default seed's network/start settings are trusted inputs, not authenticated consensus checkpoints. For explicit Testnet3 settings on first installation:
 
 ```bash
-bash artifacts/tapseal-node-1.1.4-watch.2/install.sh --network testnet3 --start 5221529 --peer https://tapseal.xyz
+bash artifacts/tapseal-node-1.1.5-security.1/install.sh --network testnet3 --start 5221529 --peer https://tapseal.xyz
 ```
 
 The seed and external block providers can change or become unavailable. Verify activation settings independently before relying on indexed results. On an existing installation, run the installer with no initialization arguments to preserve settings/data. Stop the foreground node with Ctrl+C, or remove its background service before upgrading; reinstall the service afterward. Do not start a second foreground instance alongside the background service.
@@ -49,7 +49,7 @@ Home data/configuration live in ~/.tapseal, separate from the checkout. TAPSEAL_
 
 ## Trust and verification limits
 
-Light mode depends on external Bitcoin block APIs. It checks some block/header/merkle/witness integrity, but does not implement full difficulty-transition validation, greatest-work selection or UTXO/script consensus validation. It refuses transaction construction/preview/broadcast. Full/RPC mode relies on your configured Bitcoin node for those checks.
+Light mode depends on external Bitcoin block APIs. It checks some block/header/merkle/witness integrity, but does not implement full difficulty-transition validation, greatest-work selection or UTXO/script consensus validation. It refuses transaction construction/preview/broadcast. Full/RPC mode relies on your configured Bitcoin node for those checks. The home CLI permits plaintext RPC only on loopback; remote RPC requires HTTPS or a loopback SSH tunnel.
 
 The legacy `seal-outputs-v1` root covers live seal outputs only: token counters, parameters, metadata and usage are excluded. Peer identities/check-ins are unauthenticated and can be copied. Matching reports are not proof of independent replay, complete ledger agreement or operator identity.
 
@@ -57,7 +57,21 @@ Wallet monitoring covers confirmed TAPSEAL seals in the indexed history, not ord
 
 No validator rewards, staking, mining, payouts or investment returns are implemented. Read [SECURITY.md](SECURITY.md) and [docs/TRUST-MODEL.md](docs/TRUST-MODEL.md).
 
+## Security hardening in 1.1.5-security.1
+
+Home requests reject unrecognized Host headers and cross-site origins, use a hash-pinned dashboard CSP, deny framing and caching, and do not reflect permissive CORS. Only one supervisor can run per node home. Remote seed fetches and authenticated RPC calls refuse redirects; upstream body sizes/timeouts are bounded. Same-height reorgs are detected without waiting for the next block. Wallet monitor snapshots use consistent DB reads and retain committed state on errors; malformed/symlinked watch files fail closed. CI actions are pinned to commit IDs and a source guard checks for high-confidence credential/runtime-file mistakes.
+
+This is additional defense, not a certification or full Bitcoin validation. See [docs/SECURITY-HARDENING-V2.md](docs/SECURITY-HARDENING-V2.md). Existing pre-hardening watch JSON remains untouched: watch files are now scoped by network and activation height. Re-add watched public addresses after this upgrade; the old file is preserved rather than incorrectly reusing a baseline from another indexing scope. Database/index progress and node.json stay unchanged.
+
 ## Tests
+
+One command (installs locked development dependencies, then runs isolated tests):
+
+```bash
+python3 scripts/verify.py
+```
+
+Or run the suites individually:
 
 ```bash
 cd backend/api

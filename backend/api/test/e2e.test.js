@@ -29,13 +29,13 @@ const other = bitcoin.payments.p2tr({ internalPubkey: ECPair.makeRandom().public
 const py = (...args) => JSON.parse(execFileSync('python3', ['-I', FIX, ...args], { encoding: 'utf8' }));
 const fakeUtxos = (n = 1, value = 300000) => Array.from({ length: n }, (_, i) => ({ txid: (i + 1).toString(16).padStart(64, 'a'), vout: i, value }));
 
-let base, rpcCalls = [], server, rpcServer;
+let base, rpcCalls = [], server, rpcServer, wrongTxId=false;
 test.before(async () => {
   const made = py('make', DB, SK.toString('hex'));
   assert.strictEqual(made.owner, tweaked.publicKey.subarray(1).toString('hex'), 'fixture owner = UniSat output key');
   rpcServer = http.createServer((req, res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
     const j = JSON.parse(b); rpcCalls.push(j); const txid = bitcoin.Transaction.fromHex(j.params[0]).getId();
-    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ result: txid, error: null, id: j.id })); }); });
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ result: wrongTxId?'ff'.repeat(32):txid, error: null, id: j.id })); }); });
   await new Promise((r) => rpcServer.listen(0, r));
   const app = express(); app.use(express.json());
   app.use('/api/tapseal', createRouter({ dbPath: DB, network: 'mainnet', mempoolApi: 'http://127.0.0.1:9', minServerUtxo: 10000,
@@ -155,3 +155,5 @@ test('pending mint readout reports detected demand and partial coverage', async 
   const bad = await get('/tokens/STONK/pending?sats=-1');
   assert.strictEqual(bad.ok, false);
 });
+
+test('broadcast refuses a mismatched relay transaction ID',async()=>{const built=await post('/psbt/mint',{tick:'STONK',address,public_key:user.publicKey.toString('hex'),pay_sats:1000,fee_rate:2,utxos:fakeUtxos()});const psbt=bitcoin.Psbt.fromHex(built.psbt_hex,{network:NET});for(const {index} of built.sign_inputs)psbt.signInput(index,tweaked);wrongTxId=true;try{const result=await post('/broadcast',{psbt:psbt.toHex()});assert.equal(result.ok,false);assert.match(result.error,/different transaction ID/)}finally{wrongTxId=false}});
