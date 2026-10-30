@@ -311,6 +311,7 @@ def sync(rpc: Rpc, store: Store, st: T.State, start: int, log=print) -> int:
         processed += 1
         ops = sum(1 for e in events if e["kind"] in ("deploy", "mint", "transfer", "burn", "meta", "allowlist"))
         if ops or h % 50 == 0 or h == tip:
+            store.put_node(height=h,tip=tip,lag=max(0,tip-h),updated_at=int(time.time()))
             log(json.dumps({"height": h, "ops": ops, "seals": len(st.seals), "root": st.root()[:16]}))
         h += 1
     return tip
@@ -363,6 +364,13 @@ def telemetry(rpc: Rpc, store: Store, tip: int, started: float, mem: dict | None
     store.put_node(**kv)
 
 
+def verify_rpc_network(rpc,network):
+    expected={'mainnet':'main','testnet3':'test','testnet':'testnet4','testnet4':'testnet4','signet':'signet','regtest':'regtest'}.get(network)
+    info=rpc.call('getblockchaininfo')
+    if not expected or info.get('chain')!=expected:raise RuntimeError('RPC network mismatch; indexing refused without applying blocks.')
+    return info
+
+
 def follow(args):
     args.esplora = getattr(args, "esplora", "") or ""
     if args.esplora:
@@ -372,7 +380,13 @@ def follow(args):
         args.mempool_budget = 0
     else:
         rpc = Rpc(args.rpc_url, args.rpc_user, args.rpc_password, args.rpc_bearer, args.rps)
+    if not args.esplora:verify_rpc_network(rpc,args.network)
     store = Store(args.db)
+    existing=dict(store.db.execute("select key,value from node where key in ('network','activation')"))
+    if 'network' in existing and json.loads(existing['network'])!=args.network:
+        raise RuntimeError('Database network mismatch; indexing refused.')
+    if 'activation' in existing and json.loads(existing['activation'])!=args.start:
+        raise RuntimeError('Database activation mismatch; indexing refused.')
     st = store.load_state()
     store.put_node(network=args.network, activation=args.start, mempool_enabled=args.mempool_budget > 0,
                    mode="light" if args.esplora else "full", source=args.esplora or "bitcoin-rpc")
@@ -384,6 +398,7 @@ def follow(args):
     backfill_token_ids(rpc, store, st, log=lambda m: print(m, flush=True))
     while True:
         try:
+            if not args.esplora:verify_rpc_network(rpc,args.network)
             tip = sync(rpc, store, st, args.start, log=lambda m: print(m, flush=True))
             mem = None
             if args.mempool_budget > 0 and time.monotonic() - last_scan >= args.mempool_interval:

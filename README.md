@@ -2,7 +2,7 @@
 
 A watch-only TAPSEAL indexer, local API and terminal-style operator dashboard. Run it on your own computer, inspect the code, build it from source and compare local seal-output observations with peers.
 
-**Experimental Testnet3 software. Rewards: not active. This is not Bitcoin Core.**
+**Experimental software. Mainnet uses BTC; Testnet3 uses test coins. Rewards: not active. This is not Bitcoin Core.**
 
 ## What it does
 
@@ -25,7 +25,7 @@ From this repository's root:
 
 ```bash
 python3 softnode/build-release.py
-bash artifacts/tapseal-node-1.1.5-security.1/install.sh
+bash artifacts/tapseal-node-1.2.0-networks.1/install.sh
 ~/.local/bin/tapseal-node service install
 ~/.local/bin/tapseal-node status
 ```
@@ -33,7 +33,7 @@ bash artifacts/tapseal-node-1.1.5-security.1/install.sh
 The build itself does not download executable code. The installer installs locked npm dependencies, then initializes settings from the configured seed. Run as your regular user, without sudo. Inspect scripts before execution. Open http://localhost:8090 and add a public address to the watch-only monitor. The default seed's network/start settings are trusted inputs, not authenticated consensus checkpoints. For explicit Testnet3 settings on first installation:
 
 ```bash
-bash artifacts/tapseal-node-1.1.5-security.1/install.sh --network testnet3 --start 5221529 --peer https://tapseal.xyz
+bash artifacts/tapseal-node-1.2.0-networks.1/install.sh --network testnet3 --start 5221529 --peer https://tapseal.xyz
 ```
 
 The seed and external block providers can change or become unavailable. Verify activation settings independently before relying on indexed results. On an existing installation, run the installer with no initialization arguments to preserve settings/data. Stop the foreground node with Ctrl+C, or remove its background service before upgrading; reinstall the service afterward. Do not start a second foreground instance alongside the background service.
@@ -57,7 +57,7 @@ Wallet monitoring covers confirmed TAPSEAL seals in the indexed history, not ord
 
 No validator rewards, staking, mining, payouts or investment returns are implemented. Read [SECURITY.md](SECURITY.md) and [docs/TRUST-MODEL.md](docs/TRUST-MODEL.md).
 
-## Security hardening in 1.1.5-security.1
+## Security hardening in 1.2.0-networks.1
 
 Home requests reject unrecognized Host headers and cross-site origins, use a hash-pinned dashboard CSP, deny framing and caching, and do not reflect permissive CORS. Only one supervisor can run per node home. Remote seed fetches and authenticated RPC calls refuse redirects; upstream body sizes/timeouts are bounded. Same-height reorgs are detected without waiting for the next block. Wallet monitor snapshots use consistent DB reads and retain committed state on errors; malformed/symlinked watch files fail closed. CI actions are pinned to commit IDs and a source guard checks for high-confidence credential/runtime-file mistakes.
 
@@ -100,3 +100,18 @@ Tests use explicitly synthetic keys/transactions; never fund the fixture keys. T
 ## License and contributions
 
 MIT for TAPSEAL project code; third-party dependencies retain their own licenses. See [LICENSE](LICENSE), [THIRD-PARTY.md](THIRD-PARTY.md) and [CONTRIBUTING.md](CONTRIBUTING.md). The MIT license permits proprietary forks; changes are not required to be published. Source availability helps inspection but does not certify safety or eliminate provider trust.
+
+## Mainnet / Testnet3 profiles
+
+Each network uses a separate database, activation, peer list and watch file. Existing config is saved as its active profile automatically. After the public dual backend is installed:
+
+```bash
+tapseal-node network list
+tapseal-node network configure mainnet
+tapseal-node network use mainnet
+tapseal-node network use testnet3
+```
+
+`configure` reads network/activation metadata from https://tapseal.xyz/mainnet or /testnet3, refuses a mismatched seed, and creates a read-only light profile without copying another network's RPC credentials. `use` queues a switch through the protected local API if the supervisor is running; otherwise it selects the profile for the next start. The supervisor stops its children, saves configuration and restarts itself; databases are retained. The local dashboard provides a selector for already configured profiles. No seed phrase/private key is required.
+
+Full/RPC indexing checks the RPC's reported network before applying blocks and checks saved DB network/activation. The API rejects a mismatched stored DB network. These checks prevent accidental mixing; they do not make an untrusted provider honest or add full Bitcoin consensus validation to light mode. First sync of another network can take time. A stale/mismatched backend remains blocked for transaction preview.

@@ -12,6 +12,7 @@ from test_indexer import FakeRpc,rpc_tx,opret,h,chain,TREASURY
 class CountingRpc(FakeRpc):
     def __init__(self):super().__init__();self.calls=Counter();self.fail=set();self.interrupt_at=None;self.snapshot_fail=False;self.rate_limit=None
     def call(self,method,*params):
+        if method=='getblockchaininfo':return {'chain':getattr(self,'chain_name','test'),'initialblockdownload':False}
         self.calls[method]+=1
         if method=='getrawmempool' and self.snapshot_fail:raise RuntimeError('offline')
         if method=='getrawtransaction':
@@ -102,6 +103,11 @@ class PersistentScan(unittest.TestCase):
     def follow_args(self,budget,once=True):
         from types import SimpleNamespace
         return SimpleNamespace(rpc_url='https://fake.invalid',rpc_user='',rpc_password='',rpc_bearer='',rps=10,db=self.file,network='testnet3',start=100,mempool_budget=budget,mempool_interval=60,mempool_scan_seconds=10,mempool_rpc_budget=100,poll=10,once=once)
+    def test_wrong_rpc_network_stops_before_replaying_blocks(self):
+        self.rpc.chain_name='main';self.rpc.blocks,_=chain()
+        with patch.object(IX,'Rpc',return_value=self.rpc):
+            with self.assertRaisesRegex(RuntimeError,'network mismatch'):IX.follow(self.follow_args(0))
+        self.assertIsNone(self.store.tip())
     def test_disabled_follow_makes_no_mempool_snapshot_requests(self):
         self.rpc.blocks,_=chain()
         with patch.object(IX,'Rpc',return_value=self.rpc):IX.follow(self.follow_args(0))

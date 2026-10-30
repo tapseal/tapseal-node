@@ -31,6 +31,7 @@ if(env.HOME_NODE === 'true')app.use(require('./src/home-security').homeGuard({si
 app.use(cors({ origin: env.HOME_NODE === 'true' ? false : env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',') : true }));
 app.disable('x-powered-by');
 app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');next();});
+if(env.MAINNET_PROXY_ENABLED==='true'){if(config.network!=='testnet3')throw Error('Mainnet gateway primary must be Testnet3');app.use('/mainnet/api/tapseal',require('./src/network-gateway').mainnetGateway());}
 app.use(express.json({ limit: '256kb' }));
 // Enabled only by the home CLI; not enabled on the public Vultr API.
 if(env.WALLET_MONITOR_FILE){
@@ -41,7 +42,16 @@ if(env.WALLET_MONITOR_FILE){
   app.post('/api/local-monitor',(req,res)=>{try{res.json(monitor.add(req.body.address))}catch(e){res.status(400).json({ok:false,error:e.message})}});
   app.delete('/api/local-monitor',(req,res)=>{try{res.json(monitor.remove(String(req.body.address||'')))}catch(e){res.status(400).json({ok:false,error:e.message})}});
 }
-app.use('/api/tapseal', createRouter(config));
+if(env.NODE_PROFILES_DIR&&env.NETWORK_REQUEST_FILE){
+ const {localOnly}=require('./src/wallet-monitor');
+ const profiles=require('./src/local-networks').localNetworks({directory:env.NODE_PROFILES_DIR,requestFile:env.NETWORK_REQUEST_FILE,network:config.network});
+ app.use('/api/local-networks',localOnly);
+ app.get('/api/local-networks',(req,res)=>res.json(profiles.list()));
+ app.post('/api/local-networks/use',(req,res)=>{try{res.json(profiles.use(req.body.network))}catch{res.status(400).json({ok:false,error:'Network profile unavailable or invalid'})}});
+}
+const router=createRouter(config);
+app.use('/api/tapseal',router);
+app.use('/'+config.network+'/api/tapseal',router);
 if (env.SERVE_STATIC === 'true') { // local testing: serve the console and mempool pages from the same origin
   app.use('/console', express.static(path.resolve(__dirname, '../console')));
   app.use('/mempool', express.static(path.resolve(__dirname, '../mempool')));

@@ -14,6 +14,7 @@ for folder in ['src','scripts']:shutil.copytree(ROOT/'backend/api'/folder,stage/
 for file in ['server.js','package.json','package-lock.json']:shutil.copy2(ROOT/'backend/api'/file,stage/'app/api'/file)
 shutil.copytree(ROOT/'softnode/node-ui',stage/'app/site')
 shutil.copy2(ROOT/'softnode/tapseal-node',stage/'app/bin/tapseal-node')
+shutil.copy2(ROOT/'softnode/network_profiles.py',stage/'app/bin/network_profiles.py')
 for file in ['install.sh','Dockerfile','docker-compose.yml']:shutil.copy2(ROOT/'softnode'/file,stage/file)
 for file in ['README.md','LICENSE','SECURITY.md','THIRD-PARTY.md']:shutil.copy2(ROOT/file,stage/file)
 source_files={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(ROOT.rglob('*')) if p.is_file() and not any(part in {'node_modules','__pycache__','.git','artifacts'} for part in p.relative_to(ROOT).parts) and p.suffix!='.pyc'}

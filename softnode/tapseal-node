@@ -17,6 +17,7 @@ Everything lives in ~/.tapseal (TAPSEAL_HOME): node.json, data/tapseal.sqlite, l
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import fcntl
 import urllib.parse
 import tempfile
@@ -37,7 +38,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.1.5-security.1"
+VERSION = "1.2.0-networks.1"
 HOME = Path(os.environ.get("TAPSEAL_HOME", Path.home() / ".tapseal")).expanduser()
 APP = Path(os.environ.get("TAPSEAL_APP", Path(__file__).resolve().parent.parent)).resolve()
 CONFIG = HOME / "node.json"
@@ -227,13 +228,54 @@ def instance_lock():
     return handle
 
 
+def cmd_network(a):
+    import copy
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    import network_profiles as profiles
+    cfg=load()
+    profiles.save(HOME,cfg)
+    if a.action=="list":
+        for network in profiles.NETWORKS:
+            try:
+                c=profiles.read(HOME,network);say(f"{network}: configured, from block {c['start']}"+(" [active]" if cfg['network']==network else ""))
+            except (OSError,ValueError,sqlite3.Error):say(f"{network}: not configured")
+        return
+    if a.action=="configure":
+        if (HOME/'profiles'/(a.network+'.json')).exists():die("Profile already configured. Use network use to select it.")
+        seed=a.from_url or 'https://tapseal.xyz/'+a.network
+        status=remote_json(api_of(seed)+'/status')
+        if status.get('network')!=a.network:die("Seed reports another network; profile not changed.")
+        start=status.get('activation') if status.get('activation') is not None else (status.get('node') or {}).get('activation')
+        if type(start) is not int or start<0:die("Seed activation is missing; profile not changed.")
+        target={'version':VERSION,'node_id':secrets.token_hex(8),'public_url':'','network':a.network,'mode':'light','start':start,'port':cfg['port'],'host':cfg['host'],'peers':[seed],'serve_site':cfg.get('serve_site',True),'esplora':ESPLORA[a.network],'rpc':{'url':'','user':'','password':'','bearer':''},'db':str(HOME/'data'/a.network/str(start)/'tapseal.sqlite')}
+        profiles.save(HOME,target)
+        profiles.read(HOME,a.network)
+        say(f"Configured {a.network} light profile from verified seed metadata at activation {start}. Use network use {a.network}.")
+        return
+    target=profiles.read(HOME,a.network)
+    try:handle=instance_lock()
+    except RuntimeError:
+        body=json.dumps({'network':a.network}).encode()
+        request=urllib.request.Request(local_api(cfg).replace('/api/tapseal','/api/local-networks/use'),data=body,headers={'content-type':'application/json','x-tapseal-monitor':'1'},method='POST')
+        with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:
+            if not json.load(response).get('ok'):die('Switch was not accepted')
+        say(f"Requested switch to {a.network}; the background supervisor will restart its children.")
+        return
+    try:save(target)
+    finally:handle.close()
+    say(f"Selected {a.network}; start the node or install its background service.")
+
+
 def cmd_start(a) -> None:
     if os.geteuid()==0:die("Run the home node as your regular user, not root.")
     try:instance_handle=instance_lock()
     except (OSError,RuntimeError):die("Node home is unsafe or already running. Stop its service before starting another instance.")
     cfg = load()
+    sys.path.insert(0,str(Path(__file__).resolve().parent))
+    import network_profiles as profiles
     if not cfg.get("node_id"):                # configs from before the network map
         cfg["node_id"] = secrets.token_hex(8); save(cfg)
+    if cfg['network'] in profiles.NETWORKS:profiles.save(HOME,cfg)
     py = sys.executable or need("python3", "Install Python 3.10+.")
     node = need("node", "Install Node.js 22+ (https://nodejs.org).")
     db = Path(cfg["db"]); db.parent.mkdir(parents=True, exist_ok=True)
@@ -252,8 +294,8 @@ def cmd_start(a) -> None:
         idx += ["--mempool-budget", "0"]
 
     api_env = {**env, "PYTHON_BIN": py, "PORT": str(cfg["port"]), "HOST": cfg["host"], "NODE_MODE": cfg["mode"], "PEERS": ",".join(cfg["peers"]),
-               "HOME_NODE": "true", "PUBLIC_LAUNCH": "true" if cfg.get("public_launch", True) else "false", "ALLOWLIST_FILE": str(HOME / "data" / "allowlist.json"),
-               "WALLET_MONITOR_FILE": str(HOME / "data" / ("wallet-monitor-"+cfg["network"]+"-"+str(cfg["start"])+".json")), "NODE_ID": cfg["node_id"], "PUBLIC_URL": cfg.get("public_url", "")}
+               "HOME_NODE": "true", "MAINNET_PROXY_ENABLED": "false", "PUBLIC_LAUNCH": "true" if cfg.get("public_launch", True) else "false", "ALLOWLIST_FILE": str(HOME / "data" / "allowlist.json"),
+               "NODE_PROFILES_DIR": str(HOME/"profiles"), "NETWORK_REQUEST_FILE": str(HOME/"network-switch.json"), "WALLET_MONITOR_FILE": str(HOME / "data" / ("wallet-monitor-"+cfg["network"]+"-"+str(cfg["start"])+".json")), "NODE_ID": cfg["node_id"], "PUBLIC_URL": cfg.get("public_url", "")}
     if cfg.get("serve_site", True) and (APP / "site" / "index.html").exists():
         api_env["SITE_DIR"] = str(APP / "site")
     indexer = Child("indexer", idx, env, logs / "indexer.log")
@@ -277,7 +319,20 @@ def cmd_start(a) -> None:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     while not done.wait(1):
-        pass
+        request_file=HOME/'network-switch.json'
+        if request_file.exists():
+            try:
+                if request_file.is_symlink() or request_file.stat().st_size>1024:raise ValueError('Unsafe switch request')
+                request=json.loads(request_file.read_text());request_file.unlink()
+                if abs(time.time()*1000-request['created_at'])>30000:raise ValueError('Expired switch request')
+                target=profiles.read(HOME,request['network'])
+                if target['network']==cfg['network']:continue
+                profiles.save(HOME,cfg)
+                say('Switching network to '+target['network']+'; stored databases are retained.')
+                api.stop();indexer.stop();save(target);instance_handle.close()
+                os.execv(sys.executable,[sys.executable,str(Path(__file__).resolve()),'start'])
+            except (OSError,ValueError,KeyError,sqlite3.Error):
+                say('Network switch refused: check profile configuration and database network. No ledger was deleted.')
 
 
 # ── status / peers / service ─────────────────────────────────────────────────
@@ -525,14 +580,19 @@ def main() -> None:
     s = sub.add_parser("status", help="show sync and peer agreement"); s.add_argument("--json", action="store_true")
     p = sub.add_parser("peers", help="list, add or remove peers")
     p.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list"); p.add_argument("url", nargs="?")
+    n=sub.add_parser('network',help='list/configure/use isolated mainnet and testnet3 profiles')
+    n.add_argument('action',choices=['list','configure','use'],nargs='?',default='list')
+    n.add_argument('network',choices=['mainnet','testnet3'],nargs='?')
+    n.add_argument('--from',dest='from_url',help='matching network public API seed')
     v = sub.add_parser("service", help="run as a background service (starts at boot/login, restarts if it stops)")
     v.add_argument("action", nargs="?", choices=["install", "remove", "status"], default="status")
     v.add_argument("--dry-run", action="store_true", help="show what install would write")
     v.add_argument("--windows-task", action="store_true", help="WSL: also create a Windows sign-in task that starts the node")
     a = ap.parse_args()
+    if a.cmd=='network' and a.action!='list' and not a.network:ap.error('network configure/use needs mainnet or testnet3')
     if a.cmd == "peers" and a.action in ("add", "remove") and not a.url:
         ap.error(f"peers {a.action} needs a URL")
-    {"init": cmd_init, "start": cmd_start, "status": cmd_status, "peers": cmd_peers, "service": cmd_service}[a.cmd](a)
+    {"network":cmd_network,"init": cmd_init, "start": cmd_start, "status": cmd_status, "peers": cmd_peers, "service": cmd_service}[a.cmd](a)
 
 
 if __name__ == "__main__":
