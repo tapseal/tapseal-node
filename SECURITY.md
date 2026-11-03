@@ -1,25 +1,17 @@
-# Security policy
+# Security policy and boundaries
 
-This is experimental Mainnet/Testnet3 software. Mainnet uses real BTC. No security certification, full-consensus validator claim or guaranteed response SLA is offered.
+Experimental Mainnet/Testnet software; Mainnet uses real BTC. This node-only repository has no transaction builders, owner-management service, signed-pass issuer, wallet signing endpoint, transaction-preview service or Bitcoin broadcast handler. The public launch/mint website and its deployment code are separate.
 
-Before reporting: never include real private keys, seed phrases, RPC credentials, your .env/node.json files, watchlists or production database. Public addresses and fixture keys can also expose private activity; minimize reports.
+The local API opens the chain database read-only. The Python indexer is its chain-state writer. All transaction mutations are unconditionally refused, including in RPC/full mode and with HOME_NODE=false. Local watchlists, proof-search settings, profile-switch requests and bounded peer check-ins are the intended separate mutations. They do not move coins or issue tokens.
 
-Do not put an unpatched exploitable issue or secrets into a public issue. Use the repository's private vulnerability reporting channel once the maintainer has enabled it. Until such a channel is enabled, request a private contact method from the maintainer without publishing exploit details. No private contact endpoint is configured by this source package.
+Home Host/origin/CSP protections are always installed. Private local controls also require loopback request checks and a custom header. Keep port 8090 bound to loopback. Default local files are private but not encrypted. A compromised OS/user account can read them and alter the program.
 
-## Boundaries
+Light mode depends on external block sources for availability and chain view; supported integrity checks are not full Bitcoin consensus validation. Full mode depends on the configured Bitcoin RPC. Peer observations are unauthenticated, not validator votes or proof of reward eligibility. Seal roots do not commit the complete ledger. Remote peer transport rejects reserved/private addresses and redirects and bounds responses; this does not prove absence of SSRF/DoS bugs.
 
-- The home API binds to loopback by default. Do not expose it as a public wallet-management service.
-- Local monitor routes require loopback origin/host/header checks; monitored addresses and history are private local JSON, not encrypted.
-- External Bitcoin APIs/RPC nodes remain trusted for availability and chain views. Light mode is not full Bitcoin consensus validation.
-- Peer IDs and root matches are unauthenticated. Counts are not voting power or reward eligibility.
-- Remote peer transport rejects private/reserved destinations and redirects and limits resource use. This is not a guarantee against all SSRF or denial-of-service bugs.
-- Bootstraps pin archive checksums, but website/bootstrap compromise can replace both. Independent signing and published key provenance are not implemented.
-- Dependencies are locked; native addon/npm install scripts still execute during installation. Inspect and trust the source/dependency chain.
-- Child logs rotate; service-manager stdout retention needs operator configuration.
-- The transaction preview tip-race patch retains exact canonical-tip equality and bounded retries. A new block or stale indexer can still require rebuilding.
+The opt-in worker hashes public owner-bound proof data, pauses when complete, and neither holds spending keys nor signs/broadcasts transactions. A proof is not Bitcoin mining or independent node-service attestation. Discounts require confirmed on-chain rules, not merely running a node.
 
-See docs/SECURITY-REVIEW-2026-10-30.md for the earlier scoped review and its unresolved limitations. That report predates some monitoring/preview changes and is not an independent audit of this full release.
+Protocol reference code and tests include encoding, cryptographic primitives, synthetic fixture keys and historical-signature verification so the node can replay real history. They are not a production signing service. Never fund fixture keys. Never publish production .env/node.json files, wallets, watchlists, RPC credentials, logs or databases.
 
-## Additional hardening
+Dependencies are locked but native/npm install scripts execute during installation. Archive hashes pin bytes, not an independently authenticated publisher; release signing is not implemented. Source guards are heuristic, tests are scoped, and this is not an independent security audit.
 
-See docs/SECURITY-HARDENING-V2.md for the 1.1.5-security.1 changes and evidence. Home requests are origin/Host constrained with a script-hash CSP. Duplicate supervisors are refused, watch snapshots commit atomically from a consistent DB read, upstream RPC redirects are refused and responses bounded, and CI uses immutable action commits. These protections do not authenticate peer identity, fully validate Bitcoin, sign releases, or protect a compromised user account/OS.
+Do not report secrets or unpatched exploit details in a public issue. Use GitHub private vulnerability reporting if the maintainer has enabled it; otherwise ask for a private reporting channel without posting the exploit. No private endpoint or response SLA is promised.

@@ -59,6 +59,6 @@ test('a light node serves reads and refuses every write', async () => {
   assert.ok((await (await fetch(l + '/api/tapseal/tokens')).json()).tokens.length >= 2);
   for (const p of ['/psbt/mint', '/psbt/transfer', '/transactions/simulate', '/broadcast']) {
     const res = await fetch(l + '/api/tapseal' + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-    assert.strictEqual(res.status, 503); assert.match((await res.json()).error, /light node/);
+    assert.strictEqual(res.status, 503); assert.match((await res.json()).error, /Node-only API/);
   }
 });

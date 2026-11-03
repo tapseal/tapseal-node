@@ -182,15 +182,9 @@ function quoteMint(token, paySats, opts = {}) {
 
 const passMessage = (tick, ownerX, max, expiry) =>
   taggedHash('TAPSEAL/pass', Buffer.from([...tickBytes(tick), ...x32(ownerX), ...varint(max), ...varint(expiry)]));
-function signPass(seckeyHex, tick, ownerX, max, expiry) {
-  const msg = passMessage(tick, ownerX, max, expiry);
-  const aux = taggedHash('TAPSEAL/pass-aux', Buffer.concat([Buffer.from(seckeyHex, 'hex'), msg]));
-  return Buffer.from(ecc.signSchnorr(msg, Buffer.from(seckeyHex, 'hex'), aux)).toString('hex');
-}
 function verifyPass(keyHex, tick, ownerX, max, expiry, sigHex) {
   try { return ecc.verifySchnorr(passMessage(tick, ownerX, max, expiry), Buffer.from(keyHex, 'hex'), Buffer.from(sigHex, 'hex')); } catch (e) { return false; }
 }
-const xonlyOf = (seckeyHex) => Buffer.from(ecc.xOnlyPointFromScalar(Buffer.from(seckeyHex, 'hex'))).toString('hex');
 
 /** Find the payload in a transaction and decode the op name/tick (enough for the mempool view). */
 function sniffPayload(tx) {
@@ -212,5 +206,5 @@ function sniffPayload(tx) {
 module.exports = {
   MAGIC, NUMS, LEAF_VERSION, SEAL_SATS, TICK_RE, encode, opReturnScript, tokenCommitment, authCommitment,
   sealLeaf, seal, ownerOfAddress, networkOf, curveAtoms, quoteMint, mintAmount, wlActive, reserveLeft, sniffPayload, bitcoin, ecc,
-  passMessage, signPass, verifyPass, xonlyOf, taggedHash,
+  passMessage, verifyPass, taggedHash,
 };

@@ -6,7 +6,7 @@
 services:
   tapseal-node:
     build: .
-    image: tapseal-node:1.4.0-lots-rc.2
+    image: tapseal-node:1.4.1-node-only.1
     restart: unless-stopped
     ports: ["127.0.0.1:8090:8090"]
     volumes: ["tapseal:/data"]

@@ -2,7 +2,7 @@
 
 This repository distributes TAPSEAL source supplied for this project and subsequent changes, with the MIT license for project-owned code. Existing source attribution and compatibility-test references are retained. The project license does not relicense third-party dependencies or grant trademark rights.
 
-Node dependencies (including bitcoinjs-lib, better-sqlite3, Express, ipaddr.js and cryptography libraries) are obtained through npm using backend/api/package-lock.json. Their package licenses/notices remain authoritative; retain those notices if redistributing dependencies or images. Dependency license metadata is available in the lockfile and installed package LICENSE files. Native transitive components may have their own notices.
+Node dependencies (including bitcoinjs-lib, better-sqlite3, Express, ipaddr.js and cryptography libraries) are obtained through npm using node/local-api/package-lock.json. Their package licenses/notices remain authoritative; retain those notices if redistributing dependencies or images. Dependency license metadata is available in the lockfile and installed package LICENSE files. Native transitive components may have their own notices.
 
 Python runtime code uses the standard library. Tests contain synthetic signing keys and transaction vectors, clearly for tests only. No live wallets or operator configurations belong in this repository.
 

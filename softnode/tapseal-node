@@ -3,7 +3,7 @@
 tapseal-node — run a TAPSEAL soft node: indexer + API + the local node console, in one process tree.
 
   tapseal-node init                     light node, settings copied from the seed node (network, start block, peers)
-  tapseal-node init --full --rpc-url …  full node on your own Bitcoin RPC (can build and broadcast transactions)
+  tapseal-node init --full --rpc-url …  read-only indexing through your own Bitcoin RPC
   tapseal-node start                    run in the foreground (Ctrl+C stops); restarts a crashed part
   tapseal-node status                   height, sync, state root and how many peers agree
   tapseal-node peers [add URL | remove URL]
@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.4.0-lots-rc.2"
+VERSION = "1.4.1-node-only.1"
 HOME = Path(os.environ.get("TAPSEAL_HOME", Path.home() / ".tapseal")).expanduser()
 APP = Path(os.environ.get("TAPSEAL_APP", Path(__file__).resolve().parent.parent)).resolve()
 CONFIG = HOME / "node.json"

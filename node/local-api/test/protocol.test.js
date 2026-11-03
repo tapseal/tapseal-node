@@ -50,13 +50,11 @@ test('vectors: every payload, including 1.1 extensions, encodes byte for byte', 
   }
 });
 
-test('allowlist passes: Python-signed pass verifies in Node and Node-signed passes verify', () => {
+test('allowlist passes: historical allowlist signature verifies and rejects altered allocation', () => {
   const a = vec.allowlist;
   assert.strictEqual(ts.passMessage(a.tick, a.owner, BigInt(a.max), a.expiry).toString('hex'), a.message);
   assert.ok(ts.verifyPass(a.signer_xonly, a.tick, a.owner, BigInt(a.max), a.expiry, a.sig));
-  const sig = ts.signPass(a.signer_secret, a.tick, a.owner, BigInt(a.max), a.expiry);
-  assert.ok(ts.verifyPass(a.signer_xonly, a.tick, a.owner, BigInt(a.max), a.expiry, sig));
-  assert.ok(!ts.verifyPass(a.signer_xonly, a.tick, a.owner, BigInt(a.max) + 1n, a.expiry, sig));
+  assert.ok(!ts.verifyPass(a.signer_xonly, a.tick, a.owner, BigInt(a.max) + 1n, a.expiry, a.sig));
 });
 
 test('quoteMint mirrors the 1.1 rules: reserve, allowlist price, pass and wallet limits', () => {

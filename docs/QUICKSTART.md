@@ -13,7 +13,7 @@ After the installer completes:
 ~/.local/bin/tapseal-node status
 ```
 
-Expected version: `1.4.0-lots-rc.2`. New installations default to the Mainnet seed. Open http://localhost:8090 . Wait for indexing to catch up; it can take time and API rate limits can slow it down. A blank block while the first request completes is not a balance.
+Expected version: `1.4.1-node-only.1`. New installations default to the Mainnet seed. Open http://localhost:8090 . Wait for indexing to catch up; it can take time and API rate limits can slow it down. A blank block while the first request completes is not a balance.
 
 ## Existing Testnet installation
 

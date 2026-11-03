@@ -10,7 +10,7 @@ Use a clean clone or reviewed tagged checkout. Do not overwrite unrelated local 
 python3 scripts/verify.py
 python3 softnode/build-release.py
 ~/.local/bin/tapseal-node service remove
-bash artifacts/tapseal-node-1.4.0-lots-rc.2/install.sh
+bash artifacts/tapseal-node-1.4.1-node-only.1/install.sh
 ~/.local/bin/tapseal-node service install
 ~/.local/bin/tapseal-node --version
 ~/.local/bin/tapseal-node status

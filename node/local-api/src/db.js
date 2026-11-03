@@ -1,9 +1,9 @@
-// Read access to the indexer's SQLite file (WAL). The only write is inserting broadcast txs into `mempool`.
+// Read-only access to the indexer database. Only the indexer writes chain state.
 const Database = require('better-sqlite3');
 const ts = require('./tapseal');
 
 function open(file) {
-  const db = new Database(file, { fileMustExist: true });
+  const db = new Database(file, { readonly: true, fileMustExist: true });
   db.pragma('busy_timeout = 5000');
   const q = {
     tip: db.prepare('select height, hash, time, root from blocks order by height desc limit 1'),
@@ -18,7 +18,6 @@ function open(file) {
     mempool: db.prepare('select txid, seen, kind, tick, op, error, fee_rate, vsize, bytes, source, paid from mempool order by seen desc limit ?'),
     mempoolCount: db.prepare('select count(*) n from mempool'),
     node: db.prepare('select key, value from node'),
-    insertMempool: db.prepare('insert or ignore into mempool(txid, seen, kind, tick, op, error, fee_rate, vsize, bytes, source, paid) values (?,?,?,?,?,?,?,?,?,?,?)'),
   };
 
   const parseToken = (json) => {
@@ -53,7 +52,6 @@ function open(file) {
     mempool: (limit) => q.mempool.all(limit).map((r) => ({ ...r, op: r.op ? JSON.parse(r.op) : null })),
     mempoolCount: () => q.mempoolCount.get().n,
     node: () => Object.fromEntries(q.node.all().map((r) => [r.key, JSON.parse(r.value)])),
-    insertMempool: (row) => q.insertMempool.run(row.txid, row.seen, row.kind, row.tick, row.op, row.error, row.fee_rate, row.vsize, row.bytes, row.source, row.paid ?? null),
 
     /** Live seals owned by an x-only key: plain + authority for every tick, plus every lock height in use. */
     sealsOf(ownerX, network) {

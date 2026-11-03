@@ -4,14 +4,15 @@ from pathlib import Path
 import gzip,hashlib,io,json,os,re,shutil,tarfile,subprocess,sys
 ROOT=Path(__file__).resolve().parent.parent
 subprocess.run([sys.executable,str(ROOT/'scripts/check-source.py')],cwd=ROOT,check=True)
+subprocess.run([sys.executable,str(ROOT/'scripts/check-node-only.py')],cwd=ROOT,check=True)
 version=re.search(r'^VERSION = "([A-Za-z0-9.-]+)"',(ROOT/'softnode/tapseal-node').read_text(),re.M)[1]
 name='tapseal-node-'+version;out=ROOT/'artifacts';out.mkdir(exist_ok=True);stage=out/name
 if stage.exists():shutil.rmtree(stage)
 (stage/'app/api').mkdir(parents=True);(stage/'app/bin').mkdir()
 ignore=shutil.ignore_patterns('node_modules','__pycache__','*.pyc','*.sqlite*','.env*','test_*.py')
-for folder in ['protocol','indexer']:shutil.copytree(ROOT/'backend'/folder,stage/'app'/folder,ignore=ignore)
-for folder in ['src','scripts']:shutil.copytree(ROOT/'backend/api'/folder,stage/'app/api'/folder,ignore=ignore)
-for file in ['server.js','package.json','package-lock.json']:shutil.copy2(ROOT/'backend/api'/file,stage/'app/api'/file)
+for folder in ['protocol','indexer']:shutil.copytree(ROOT/'node'/folder,stage/'app'/folder,ignore=ignore)
+for folder in ['src','scripts']:shutil.copytree(ROOT/'node/local-api'/folder,stage/'app/api'/folder,ignore=ignore)
+for file in ['server.js','package.json','package-lock.json']:shutil.copy2(ROOT/'node/local-api'/file,stage/'app/api'/file)
 shutil.copytree(ROOT/'softnode/node-ui',stage/'app/site')
 shutil.copy2(ROOT/'softnode/tapseal-node',stage/'app/bin/tapseal-node')
 shutil.copy2(ROOT/'softnode/network_profiles.py',stage/'app/bin/network_profiles.py')

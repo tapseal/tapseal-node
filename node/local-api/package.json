@@ -1,8 +1,8 @@
 {
-  "name": "tapseal-api",
-  "version": "1.4.0-lots-rc.2",
+  "name": "tapseal-local-node",
+  "version": "1.4.1-node-only.1",
   "private": true,
-  "description": "TAPSEAL read API and PSBT builders for UniSat",
+  "description": "Read-only local TAPSEAL node API, monitoring and opt-in proof worker",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -13,13 +13,9 @@
     "@bitcoinerlab/secp256k1": "1.2.0",
     "better-sqlite3": "11.10.0",
     "bitcoinjs-lib": "6.1.7",
-    "cors": "2.8.5",
     "dotenv": "16.4.7",
     "express": "4.22.3",
     "ipaddr.js": "2.2.0"
-  },
-  "devDependencies": {
-    "ecpair": "2.1.0"
   },
   "engines": {
     "node": ">=22"
