@@ -41,6 +41,10 @@ function createPeers({ peers = [], db, network, intervalMs = DEFAULT_INTERVAL, t
       out.height = st.tip ? st.tip.height : null;
       if(out.height!==null && (!Number.isSafeInteger(out.height)||out.height<0))throw new Error('Malformed peer height.');
       if (st.network !== network) return { ...out, state: 'other-network', agree: null, reason: `peer is on ${st.network}` };
+      if(((db.node?.()||{}).pow_activation??null)!==(st.pow_activation??st.node?.pow_activation??null))return {...out,state:'other-rules',agree:null,reason:'PoW activation differs; upgrade or configure the published network policy.'};
+
+      if(((db.node?.()||{}).pow_rules??null)!==(st.node?.pow_rules??null))return {...out,state:'other-rules',agree:null,reason:'PoW rule encoding differs; upgrade to the same published rules.'};
+      if(((db.node?.()||{}).lot_activation??null)!==(st.lot_activation??st.node?.lot_activation??null))return {...out,state:'other-rules',agree:null,reason:'Lot activation differs; update to the published Mainnet rules.'};
       const mine = tipQ.get();
       if (!mine || out.height == null) return { ...out, state: 'syncing', agree: null, reason: 'no indexed blocks yet' };
       const h = Math.min(mine.height, out.height);

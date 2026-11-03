@@ -49,11 +49,14 @@ def preview(path, request):
                 seal=state.seals.get(tx['txid']+':'+str(i))
                 if not seal or seal.amt!=int(recipient['atoms']) or seal.lock!=int(recipient.get('lock',0)) or seal.spk!=T.seal_spk(wanted['tick'].upper(),bytes.fromhex(recipient['owner']),int(recipient.get('lock',0))):
                     errors.append('Recipient allocation differs from requested amount, address or lock.')
+        if op['op']=='operator':
+            if wanted.get('operator_owner') != op['owner'] or int(wanted.get('max_atoms',-1)) != op['max'] or int(wanted.get('expiry',-1)) != op['expiry']:
+                errors.append('Operator approval differs from requested wallet, quota or expiry.')
         if op['op']=='mint':
             mint=next((e for e in evs if e['kind']=='mint'),None)
             if wanted.get('atoms') is not None and (mint is None or mint['amt']!=int(wanted['atoms'])): errors.append('Mint allocation changed. Rebuild the quote before signing.')
             tok=before.tokens.get(op['tick'])
-            if tok and op.get('pass') and not wanted.get('allowlist'): errors.append('Unexpected allowlist pass in this mint.')
+            if tok and (op.get('pass') or op.get('operator')) and not wanted.get('allowlist'): errors.append('Unexpected allowlist pass in this mint.')
             if tok and tok.mode!='fair':
                 paid=sum(o['value'] for i,o in enumerate(tx['vout']) if i!=op['vout'] and o['spk']==tok.treasury_spk)
                 cap=tok.params.get('cap',0)
@@ -64,20 +67,22 @@ def preview(path, request):
             burnt=sum(e['amt'] for e in evs if e['kind']=='burn')
             if burnt!=int(wanted['atoms']): errors.append('Burn amount differs from request.')
         if op['op']=='deploy':
+            if wanted.get('treasury_script') is not None and state.tokens.get(op['tick']) and state.tokens[op['tick']].treasury_spk.hex()!=wanted['treasury_script']:errors.append('Deployment treasury differs from request.')
+            if wanted.get('pow') is not None and op.get('pow')!=wanted['pow']:errors.append('Deployment work rules differ from request.')
             for request_key,op_key in [('max_atoms','max'),('dec','dec'),('lim_atoms','lim')]:
                 if wanted.get(request_key) is not None and op.get(op_key)!=int(wanted[request_key]): errors.append('Deployment parameters differ from request: '+request_key)
             if wanted.get('mode') is not None and op['mode']!=wanted['mode']: errors.append('Deployment mode differs from request.')
         age=max(0,int(time.time())-int(node.get('updated_at') or 0))
         lag=node.get('lag')
         if age>180 or lag is None or lag>1: errors.append('Indexer state is stale or behind the node; wait for synchronization.')
-        pending_rows=db.execute("select paid from mempool where kind='mint' and tick=?",(op.get('tick'),)).fetchall()
+        pending_rows=db.execute("select paid,op from mempool where kind='mint' and tick=?",(op.get('tick'),)).fetchall()
         demand=0;unknown=0;available=None
         if op['op']=='mint' and op['tick'] in before.tokens:
             token=before.tokens[op['tick']]
             remaining=max(0,token.max-token.minted)
-            for (payment,) in pending_rows:
+            for payment,pending_op in pending_rows:
                 if payment is None and token.mode!='fair': unknown+=1;continue
-                quoted=T.mint_amount(token,int(payment or 0))
+                quoted=T.mint_amount(token,int(payment or 0),allowlist=bool(json.loads(pending_op or '{}').get('operator')))
                 demand+=min(quoted,remaining)
             available=max(0,remaining-demand)
             allocation=sum(e['amt'] for e in evs if e['kind']=='mint')

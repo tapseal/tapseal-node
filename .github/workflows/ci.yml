@@ -33,6 +33,6 @@ jobs:
           PYTHONPATH: backend/protocol:backend/indexer
       - run: python3 -m unittest discover -s softnode -p test_*.py
       - run: python3 softnode/build-release.py
-      - run: cp artifacts/tapseal-node-1.2.0-networks.1.tar.gz /tmp/first-build.tar.gz
+      - run: cp artifacts/tapseal-node-1.4.0-lots-rc.2.tar.gz /tmp/first-build.tar.gz
       - run: python3 softnode/build-release.py
-      - run: cmp /tmp/first-build.tar.gz artifacts/tapseal-node-1.2.0-networks.1.tar.gz
+      - run: cmp /tmp/first-build.tar.gz artifacts/tapseal-node-1.4.0-lots-rc.2.tar.gz

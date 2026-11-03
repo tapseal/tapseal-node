@@ -65,4 +65,17 @@ class Security(unittest.TestCase):
    out=subprocess.run([sys.executable,str(script)],capture_output=True,text=True)
    self.assertNotEqual(out.returncode,0)
 
+class MacService(unittest.TestCase):
+ def test_enable_precedes_bootstrap_and_failure_is_not_success(self):
+  from unittest.mock import patch
+  loader=importlib.machinery.SourceFileLoader('node_mac',str(ROOT/'softnode/tapseal-node'));spec=importlib.util.spec_from_loader(loader.name,loader);m=importlib.util.module_from_spec(spec);loader.exec_module(m)
+  with tempfile.TemporaryDirectory() as d:
+   m.HOME=Path(d)/'home';calls=[];messages=[]
+   def run(command,check=False):
+    calls.append(command);return 'bootstrap' not in command
+   with patch.object(m,'load',return_value={}),patch.object(m,'_platform',return_value='macos'),patch.object(m,'service_files',return_value={str(Path(d)/'node.plist'):'fixture'}),patch.object(m,'_run',side_effect=run),patch.object(m,'say',side_effect=messages.append):
+    with self.assertRaises(SystemExit):m.cmd_service(types.SimpleNamespace(action='install',dry_run=False))
+   self.assertLess(next(i for i,c in enumerate(calls) if 'enable' in c),next(i for i,c in enumerate(calls) if 'bootstrap' in c))
+   self.assertFalse(any('service loaded;' in text for text in messages))
+
 if __name__=='__main__':unittest.main()

@@ -82,6 +82,7 @@ def jsonable(x):
 
 def tok_json(t: T.Token) -> str:
     d = dataclasses.asdict(t)
+    if d.get("pow") is None: d.pop("pow",None)
     d["treasury_spk"] = t.treasury_spk.hex() if t.treasury_spk else None
     for k in ("max", "minted", "burned", "lost"):
         d[k] = str(d[k])
@@ -129,6 +130,9 @@ class Store:
     # state ----------------------------------------------------------------
     def load_state(self) -> T.State:
         st = T.State()
+        meta={k:json.loads(v) for k,v in self.db.execute("select key,value from node where key in ('network','pow_activation','lot_activation')")}
+        st.network=meta.get('network');st.pow_activation=meta.get('pow_activation');st.lot_activation=meta.get('lot_activation')
+        st.pow_anchors=dict(self.db.execute('select height,hash from blocks order by height desc limit 145'))
         for (j,) in self.db.execute("select json from tokens"):
             t = tok_load(j)
             st.tokens[t.tick] = t
@@ -199,7 +203,7 @@ class Store:
             st.usage_before.clear()
             nops = 0
             for e in events:
-                if e["kind"] in ("deploy", "mint", "transfer", "burn", "meta", "allowlist", "invalid", "cenotaph"):
+                if e["kind"] in ("deploy", "mint", "transfer", "burn", "meta", "allowlist", "operator", "invalid", "cenotaph"):
                     nops += 1
                 db.execute("insert into events(height,txid,kind,tick,amt,detail,op) values(?,?,?,?,?,?,?)",
                            (h, e["txid"], e["kind"], e.get("tick"), str(e.get("amt", 0)), e.get("detail"), e.get("op")))
@@ -257,6 +261,7 @@ class Store:
         except Exception:
             db.execute("rollback")
             raise
+        st.pow_anchors=dict(self.db.execute('select height,hash from blocks order by height desc limit 145'))
         return h - 1
 
     # mempool + telemetry ---------------------------------------------------
@@ -382,13 +387,23 @@ def follow(args):
         rpc = Rpc(args.rpc_url, args.rpc_user, args.rpc_password, args.rpc_bearer, args.rps)
     if not args.esplora:verify_rpc_network(rpc,args.network)
     store = Store(args.db)
-    existing=dict(store.db.execute("select key,value from node where key in ('network','activation')"))
+    existing=dict(store.db.execute("select key,value from node where key in ('network','activation','pow_activation','pow_rules','lot_activation','lot_rules')"))
     if 'network' in existing and json.loads(existing['network'])!=args.network:
         raise RuntimeError('Database network mismatch; indexing refused.')
     if 'activation' in existing and json.loads(existing['activation'])!=args.start:
         raise RuntimeError('Database activation mismatch; indexing refused.')
+    prior_pow=json.loads(existing.get('pow_activation','null'))
+    if prior_pow is not None and json.loads(existing.get('pow_rules','null'))!='pow-v2':raise RuntimeError('Older PoW rules need a reviewed migration; this release cannot reinterpret existing RC1 tokens.')
+    if prior_pow is not None and prior_pow!=getattr(args,'pow_activation',None):raise RuntimeError('PoW activation is immutable; retain the published network activation height.')
+    if prior_pow is None and getattr(args,'pow_activation',None) is not None and store.tip() and store.tip()[0]>=args.pow_activation:raise RuntimeError('PoW rule activation is behind this legacy database. Back up and reindex into a new database; do not silently reinterpret stored state.')
+    prior_lot=json.loads(existing.get('lot_activation','null'))
+    requested_lot=getattr(args,'lot_activation',None)
+    if prior_lot is not None and prior_lot!=requested_lot:raise RuntimeError('Lot activation is immutable; preserve published settings.')
+    if prior_lot is None and requested_lot is not None and store.tip() and store.tip()[0]>=requested_lot:raise RuntimeError('Legacy ledger passed lot activation; replay into a separate database.')
     st = store.load_state()
-    store.put_node(network=args.network, activation=args.start, mempool_enabled=args.mempool_budget > 0,
+    st.lot_activation=requested_lot
+    st.network=args.network;st.pow_activation=getattr(args,'pow_activation',None)
+    store.put_node(lot_activation=requested_lot,lot_rules='lot-v1' if requested_lot is not None else None,pow_rules='pow-v2',pow_activation=getattr(args,'pow_activation',None),network=args.network, activation=args.start, mempool_enabled=args.mempool_budget > 0,
                    mode="light" if args.esplora else "full", source=args.esplora or "bitcoin-rpc")
     from persistent_scan import initialize_scan
     initialize_scan(store, args.mempool_budget > 0, args.mempool_interval, args.mempool_scan_seconds, args.mempool_rpc_budget, args.mempool_budget)
@@ -448,6 +463,10 @@ def main():
     f.add_argument('--mempool-scan-seconds', type=float, default=float(os.getenv('MEMPOOL_SCAN_SECONDS', '10')))
     f.add_argument('--mempool-rpc-budget', type=int, default=int(os.getenv('MEMPOOL_RPC_BUDGET', '100')))
     args = ap.parse_args()
+    args.lot_activation = int(os.environ['LOT_ACTIVATION_HEIGHT']) if os.environ.get('LOT_ACTIVATION_HEIGHT') else None
+    if args.lot_activation is not None and not 0<args.lot_activation<2**31:ap.error('Invalid LOT_ACTIVATION_HEIGHT')
+    args.pow_activation = int(os.environ['POW_ACTIVATION_HEIGHT']) if os.environ.get('POW_ACTIVATION_HEIGHT') else None
+    if args.pow_activation is not None and not 0 < args.pow_activation < 2**31:ap.error('POW_ACTIVATION_HEIGHT must be a positive block height')
     if args.cmd == 'follow' and (args.mempool_budget < 0 or args.mempool_interval < 5 or not 1 <= args.mempool_scan_seconds <= 30 or args.mempool_rpc_budget < 2):
         ap.error('Invalid scanner limits: interval >=5s, scan duration 1..30s, RPC budget >=2, transaction budget >=0.')
     if args.cmd == "follow":

@@ -1,13 +1,13 @@
 {
   "name": "tapseal-api",
-  "version": "1.2.0-networks.1",
+  "version": "1.4.0-lots-rc.2",
   "private": true,
   "description": "TAPSEAL read API and PSBT builders for UniSat",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
     "@bitcoinerlab/secp256k1": "1.2.0",

@@ -21,17 +21,20 @@ from dataclasses import dataclass, field
 # ─────────────────────────────────────────────────────────────── constants ──
 
 MAGIC = b"TSL1"
-OP_DEPLOY, OP_MINT, OP_TRANSFER, OP_BURN, OP_META, OP_ALLOWLIST = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06
+OP_DEPLOY, OP_MINT, OP_TRANSFER, OP_BURN, OP_META, OP_ALLOWLIST, OP_OPERATOR = 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
 OP_NAMES = {OP_DEPLOY: "deploy", OP_MINT: "mint", OP_TRANSFER: "transfer", OP_BURN: "burn", OP_META: "meta",
-            OP_ALLOWLIST: "allowlist"}
+            OP_ALLOWLIST: "allowlist", OP_OPERATOR: "operator"}
 
-MODE_FIXED, MODE_CURVE, MODE_FAIR = 0, 1, 2
-MODE_NAMES = {MODE_FIXED: "fixed", MODE_CURVE: "curve", MODE_FAIR: "fair"}
+MODE_FIXED, MODE_CURVE, MODE_FAIR, MODE_LOTS = 0, 1, 2, 3
+MODE_NAMES = {MODE_FIXED: "fixed", MODE_CURVE: "curve", MODE_FAIR: "fair", MODE_LOTS: "lots"}
 
 FLAG_AUTH = 0x01      # deploy creates an authority seal
 FLAG_WINDOW = 0x02    # deploy carries start/end block heights
+FLAG_POW = 0x08      # opt-in proof-of-work mint policy for new deployments
 FLAG_WALLET_CAP = 0x04  # deploy carries a per-wallet public mint limit (atoms)
 
+MINT_OPERATOR = 0x08
+MINT_POW = 0x04      # anchor height/hash and uint64 nonce; requires owner
 MINT_OWNER = 0x01     # mint names the x-only key that owns the new seal
 MINT_PASS = 0x02      # mint carries a signed allowlist pass (requires MINT_OWNER)
 BPS = 10_000
@@ -140,14 +143,17 @@ def encode(op: dict) -> bytes:
     if kind == "deploy":
         flags = (FLAG_AUTH if op.get("auth_vout") is not None else 0) | (
             FLAG_WINDOW if op.get("start") or op.get("end") else 0) | (
-            FLAG_WALLET_CAP if op.get("wallet_cap") else 0)
+            FLAG_WALLET_CAP if op.get("wallet_cap") else 0) | (FLAG_POW if op.get("pow") is not None else 0)
         out = MAGIC + bytes([OP_DEPLOY, flags]) + enc_tick(op["tick"]) + bytes([op["dec"]]) + enc_varint(op["max"])
-        mode = {"fixed": MODE_FIXED, "curve": MODE_CURVE, "fair": MODE_FAIR}[op["mode"]]
+        mode = {"fixed": MODE_FIXED, "curve": MODE_CURVE, "fair": MODE_FAIR, "lots": MODE_LOTS}[op["mode"]]
         out += bytes([mode])
         if mode == MODE_FIXED:
             out += enc_varint(op["rate"]) + enc_varint(op.get("cap", 0)) + enc_varint(op["treasury_vout"])
         elif mode == MODE_CURVE:
             out += enc_varint(op["p0"]) + enc_varint(op["p1"]) + enc_varint(op.get("cap", 0)) + enc_varint(op["treasury_vout"])
+        elif mode == MODE_LOTS:
+            if op.get("profile",1)!=1: raise ValueError("unsupported lot profile")
+            out += bytes([1]) + enc_varint(op["treasury_vout"])
         else:
             out += enc_varint(op["lim"])
         if flags & FLAG_WINDOW:
@@ -156,11 +162,14 @@ def encode(op: dict) -> bytes:
             out += enc_varint(op["auth_vout"])
         if flags & FLAG_WALLET_CAP:
             out += enc_varint(op["wallet_cap"])
-        return out
+        if flags & FLAG_POW:
+            bits, age = pow_config(op["pow"])
+            out += bytes([2, bits]) + enc_varint(age)
+        return compact_payload(out) if op.get("pow") else out
     if kind == "mint":
         out = MAGIC + bytes([OP_MINT]) + enc_tick(op["tick"]) + enc_varint(op["vout"]) + enc_varint(op.get("lock", 0))
-        ext = (MINT_OWNER if op.get("owner") is not None else 0) | (MINT_PASS if op.get("pass") is not None else 0)
-        if ext & MINT_PASS and not ext & MINT_OWNER:
+        ext = (MINT_OWNER if op.get("owner") is not None else 0) | (MINT_PASS if op.get("pass") is not None else 0) | (MINT_POW if op.get("proof") is not None else 0) | (MINT_OPERATOR if op.get("operator") else 0)
+        if ext & (MINT_PASS | MINT_POW | MINT_OPERATOR) and not ext & MINT_OWNER:
             raise ValueError("an allowlist pass needs the owner key")
         if ext:
             out += bytes([ext]) + _b32(op["owner"])
@@ -170,7 +179,18 @@ def encode(op: dict) -> bytes:
                 if len(sig) != 64:
                     raise ValueError("pass signature must be 64 bytes")
                 out += enc_varint(ps["max"]) + enc_varint(ps["expiry"]) + sig
+        if ext & MINT_POW:
+            proof = op['proof']
+            nonce = int(proof['nonce'])
+            if not 0 <= nonce < 2**64: raise ValueError('PoW nonce exceeds uint64')
+            out += enc_varint(proof['height']) + nonce.to_bytes(8,'little')
+        if ext & MINT_POW:
+            if ext & MINT_PASS: raise ValueError("compact work uses on-chain operator approval, not signed passes")
+            return compact_payload(out)
+        if ext & MINT_OPERATOR: raise ValueError("operator mint requires work")
         return out
+    if kind == "operator":
+        return compact_payload(MAGIC + bytes([OP_OPERATOR]) + enc_tick(op['tick']) + enc_varint(op['next_auth']+1) + _b32(op['owner']) + enc_varint(op['max']) + enc_varint(op['expiry']))
     if kind == "allowlist":
         return (MAGIC + bytes([OP_ALLOWLIST]) + enc_tick(op["tick"])
                 + enc_varint(0 if op.get("next_auth") is None else op["next_auth"] + 1)
@@ -204,7 +224,7 @@ def decode(payload: bytes) -> dict:
     code = r.u8()
     if code == OP_DEPLOY:
         flags = r.u8()
-        if flags & ~(FLAG_AUTH | FLAG_WINDOW | FLAG_WALLET_CAP):
+        if flags & ~(FLAG_AUTH | FLAG_WINDOW | FLAG_WALLET_CAP | FLAG_POW):
             raise DecodeError("unknown deploy flags")
         op = {"op": "deploy", "tick": r.tick(), "dec": r.u8(), "max": r.varint()}
         if op["dec"] > MAX_DECIMALS:
@@ -217,6 +237,9 @@ def decode(payload: bytes) -> dict:
             op.update(rate=r.varint(), cap=r.varint(), treasury_vout=r.varint())
         elif mode == MODE_CURVE:
             op.update(p0=r.varint(), p1=r.varint(), cap=r.varint(), treasury_vout=r.varint())
+        elif mode == MODE_LOTS:
+            op.update(profile=r.u8(),treasury_vout=r.varint())
+            if op["profile"]!=1: raise DecodeError("unsupported lot profile")
         else:
             op["lim"] = r.varint()
         if flags & FLAG_WINDOW:
@@ -227,15 +250,26 @@ def decode(payload: bytes) -> dict:
             op["wallet_cap"] = r.varint()
             if op["wallet_cap"] == 0:
                 raise DecodeError("wallet cap flag with zero cap")
+        if flags & FLAG_POW:
+            version, bits, age = r.u8(), r.u8(), r.varint()
+            try: pow_config({'version':version,'bits':bits,'max_age':age})
+            except ValueError as e: raise DecodeError(str(e)) from e
+            op['pow'] = {'version':version,'bits':bits,'max_age':age}
     elif code == OP_MINT:
         op = {"op": "mint", "tick": r.tick(), "vout": r.varint(), "lock": r.varint()}
         if r.i < len(r.b):
             ext = r.u8()
-            if ext == 0 or ext & ~(MINT_OWNER | MINT_PASS) or (ext & MINT_PASS and not ext & MINT_OWNER):
+            if ext == 0 or ext & ~(MINT_OWNER | MINT_PASS | MINT_POW | MINT_OPERATOR) or (ext & (MINT_PASS | MINT_POW | MINT_OPERATOR) and not ext & MINT_OWNER):
                 raise DecodeError("bad mint extension")
             op["owner"] = r.raw(32).hex()
             if ext & MINT_PASS:
                 op["pass"] = {"max": r.varint(), "expiry": r.varint(), "sig": r.raw(64).hex()}
+            if ext & MINT_OPERATOR:
+                if not ext & MINT_POW: raise DecodeError("operator mint requires work")
+                op["operator"] = True
+            if ext & MINT_POW:
+                if ext & MINT_PASS: raise DecodeError("signed passes are not compact work")
+                op['proof'] = {'height':r.varint(),'nonce':str(int.from_bytes(r.raw(8),'little'))}
     elif code == OP_TRANSFER:
         n = r.u8()
         if not 1 <= n <= MAX_TICKS_PER_TRANSFER:
@@ -263,6 +297,10 @@ def decode(payload: bytes) -> dict:
             typ = r.u8()
             fields.append((typ, r.raw(r.varint())))
         op = {"op": "meta", "tick": t, "next_auth": None if na == 0 else na - 1, "fields": fields}
+    elif code == OP_OPERATOR:
+        t, na = r.tick(), r.varint()
+        if na == 0: raise DecodeError('operator update must retain authority')
+        op = {'op':'operator','tick':t,'next_auth':na-1,'owner':r.raw(32).hex(),'max':r.varint(),'expiry':r.varint()}
     elif code == OP_ALLOWLIST:
         t, na = r.tick(), r.varint()
         op = {"op": "allowlist", "tick": t, "next_auth": None if na == 0 else na - 1, "key": r.raw(32).hex(),
@@ -270,6 +308,7 @@ def decode(payload: bytes) -> dict:
     else:
         raise DecodeError("unknown op")
     r.done()
+    if ('pow' in op or 'proof' in op or op['op']=='operator' or op.get('mode')=='lots') and len(payload)>80: raise DecodeError('compact payload exceeds 80 bytes')
     if op.get("lock", 0) >= LOCKTIME_THRESHOLD or any(e["lock"] >= LOCKTIME_THRESHOLD for e in op.get("edicts", [])):
         raise DecodeError("lock must be a block height")
     return op
@@ -529,8 +568,17 @@ def wl_reserve_left(tok, height: int) -> int:
     return max(0, tok.wl["reserve"] - tok.wl_minted) if wl_active(tok, height) else 0
 
 
+def lot_params():
+    return {'profile':1,'lot':1000*10**8,'public_price':700,'operator_price':450,'min_lots':1,'max_lots':10,'cap':7000}
+
+def lot_amount(paid,discount=False):
+    price=450 if discount else 700
+    if type(paid) is not int or paid%price or not 1<=paid//price<=10:return 0
+    return paid//price*(1000*10**8)
+
 def mint_amount(tok, paid: int, allowlist: bool = False) -> int:
     """Atoms bought for `paid` sats at the public price, or at the allowlist price. Before any clipping."""
+    if tok.mode == "lots":return lot_amount(paid,allowlist)
     if tok.mode == "fair":
         return tok.params["lim"]
     cap = tok.params.get("cap", 0)
@@ -541,6 +589,30 @@ def mint_amount(tok, paid: int, allowlist: bool = False) -> int:
         counted = counted * BPS // (BPS - tok.wl["price"])
     return curve_atoms(counted, tok.minted, tok.max, tok.dec, tok.params["p0"], tok.params["p1"])
 
+
+# PoW v1: an issuance predicate, not Bitcoin mining or proof of node operation.
+def compact_payload(data):
+    if len(data)>80: raise ValueError('compact payload exceeds 80 bytes')
+    return data
+
+def pow_config(cfg):
+    if cfg.get('version',2) != 2: raise ValueError('unsupported PoW version')
+    bits, age = cfg.get('bits'), cfg.get('max_age',144)
+    if type(bits) is not int or not 8 <= bits <= 28: raise ValueError('PoW bits must be 8..28')
+    if type(age) is not int or not 6 <= age <= 144: raise ValueError('PoW max_age must be 6..144 blocks')
+    return bits, age
+
+def pow_prefix(network, tok, owner, height, blockhash, paid, lock=0):
+    if network not in ('mainnet','testnet3','regtest','signet','testnet4'): raise ValueError('PoW network is unavailable')
+    if len(owner)!=32 or len(bytes.fromhex(blockhash))!=32: raise ValueError('bad PoW owner/anchor')
+    if not 0 <= paid <= 21000000*100000000 or not 0 <= height < 2**32 or not 0 <= lock < 500000000: raise ValueError('bad PoW payment/height')
+    return (b'TAPSEAL/POW/v2\x00'+network.encode()+b'\x00'+bytes.fromhex(tok.deploy_txid)+enc_tick(tok.tick)+owner+
+            height.to_bytes(4,'little')+bytes.fromhex(blockhash)+paid.to_bytes(8,'little')+lock.to_bytes(4,'little'))
+
+def pow_digest(network,tok,owner,proof,paid,lock=0):
+    nonce=int(proof['nonce'])
+    if not 0 <= nonce < 2**64: raise ValueError('bad PoW nonce')
+    return hashlib.sha256(pow_prefix(network,tok,owner,proof['height'],proof['hash'],paid,lock)+nonce.to_bytes(8,'little')).digest()
 
 # ────────────────────────────────────────────────────────────── replay state ──
 
@@ -564,6 +636,7 @@ class Token:
     id: str = ""              # "height:index" of the deploy transaction (rune-style token ID)
     wallet_cap: int = 0       # public atoms one owner key may mint in total, 0 = no limit
     wl: dict | None = None    # allowlist: {"key": hex, "price": int, "reserve": int, "end": int}
+    pow: dict | None = None   # immutable opt-in mint work policy
     wl_minted: int = 0        # atoms minted with allowlist passes
 
 
@@ -584,6 +657,10 @@ class State:
     seals: dict = field(default_factory=dict)    # outpoint -> Seal
     usage: dict = field(default_factory=dict)    # (tick, "pub"|"wl", owner hex) -> atoms minted
     usage_before: dict = field(default_factory=dict)  # first value seen per touched key (indexer undo log)
+    network: str | None = None
+    pow_activation: int | None = None
+    pow_anchors: dict = field(default_factory=dict)
+    lot_activation: int | None = None
 
     def used(self, tick: str, kind: str, owner: str) -> int:
         return self.usage.get((tick, kind, owner), 0)
@@ -649,6 +726,9 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
             op_idx = i
             try:
                 op = decode(payload)
+                if op.get('mode')=='lots' and (state.lot_activation is None or height<state.lot_activation):raise DecodeError('Lot profile is not activated')
+                if ('pow' in op or 'proof' in op or op.get('op')=='operator') and (state.pow_activation is None or height < state.pow_activation):
+                    raise DecodeError('PoW extension is not activated on this network')
             except DecodeError as exc:
                 err = str(exc)
             break
@@ -708,13 +788,18 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
             why = "lim must be in (0, max]"
         elif op.get("end") and op["end"] < op.get("start", 0):
             why = "end before start"
+        if why is None and op.get('pow') and op['mode'] not in ('fair','lots') and not 546 <= op.get('cap',0) <= 21000000*100000000:
+            why='paid PoW tokens require a per-mint payment cap of at least 546 sats'
+        if why is None and op['mode']=='lots' and (op['dec']!=8 or op['max']!=21000000*10**8 or not op.get('pow') or op.get('wallet_cap',0) or 'auth_vout' not in op):
+            why='lot profile 1 requires 21M tokens, 8 decimals, work settings and no custom wallet cap'
         tre = None
-        if why is None and op["mode"] in ("fixed", "curve"):
+        if why is None and op["mode"] in ("fixed", "curve", "lots"):
             tv = op["treasury_vout"]
             if tv >= len(vouts) or tv == op_idx:
                 why = "treasury vout missing"
             else:
                 tre = vouts[tv]["spk"]
+        if why is None and op['mode']=='lots' and not is_p2tr(tre):why='lot treasury must be Taproot'
         if why is None and op.get("wallet_cap", 0) > op["max"]:
             why = "wallet cap above max supply"
         if why is None and "auth_vout" in op:
@@ -725,8 +810,9 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
             events.append(ev(txid, "invalid", t, 0, why, op="deploy"))
             return events
         params = {k: op[k] for k in ("rate", "cap", "p0", "p1", "lim") if k in op}
+        if op['mode']=='lots':params=lot_params()
         tok = Token(t, op["dec"], op["max"], op["mode"], params, tre, op.get("start", 0), op.get("end", 0), txid, height,
-                    id=f"{height}:{index}", wallet_cap=op.get("wallet_cap", 0))
+                    id=f"{height}:{index}", wallet_cap=op.get("wallet_cap", 0), pow=op.get("pow"))
         state.tokens[t] = tok
         if "auth_vout" in op:
             new_seal(op["auth_vout"], t, 0, 0, auth=True)
@@ -760,6 +846,45 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
                 return bad("seal does not belong to the named owner key")
         paid = 0 if tok.mode == "fair" else sum(
             o["value"] for i, o in enumerate(vouts) if o["spk"] == tok.treasury_spk and i != op["vout"])
+        proof_key = None
+        if tok.pow and (tok.mode!='lots' or op.get('operator')):
+            if tok.mode!='fair' and paid>tok.params['cap']: return bad('PoW payment exceeds the per-mint cap')
+            proof = op.get('proof')
+            if owner is None or not proof: return bad('this mint requires an owner-bound PoW proof')
+            try:
+                bits, age = pow_config(tok.pow)
+                if not tok.height <= proof['height'] < height <= proof['height']+age: return bad('PoW anchor expired or is not an ancestor')
+                anchor = state.pow_anchors.get(proof['height'])
+                if not anchor: return bad('PoW anchor is not a known canonical block')
+                proof = {**proof, 'hash':anchor}
+                digest = pow_digest(state.network,tok,bytes.fromhex(owner),proof,paid,op.get('lock',0))
+                if int.from_bytes(digest,'big') >= 1 << (256-bits): return bad('PoW hash does not meet target')
+                proof_key = digest.hex()
+                if state.used(t,'pow',proof_key): return bad('PoW proof already used')
+            except (ValueError,KeyError,OverflowError,TypeError): return bad('invalid PoW context')
+        elif op.get('proof') is not None: return bad('legacy token does not accept PoW extensions')
+        if tok.mode=='lots':
+            if state.lot_activation is None or height<state.lot_activation:return bad('lot profile not activated')
+            if owner is None:return bad('lot mint must name its receiving owner')
+            if ps is not None:return bad('lot discounts require on-chain operator approval, not signed passes')
+            discount=bool(op.get('operator'))
+            amt=lot_amount(paid,discount)
+            if not amt:return bad('pay exactly 700 sats per public lot or 450 per approved proof lot; choose 1..10 lots')
+            if tok.minted+amt>tok.max:return bad('insufficient remaining whole lots; no partial fill')
+            if discount:
+                if state.used(t,'op-expiry',owner)<height or state.used(t,'op-max',owner)-state.used(t,'wl',owner)<amt:return bad('operator approval expired, missing or allowance insufficient')
+            if op['vout']<len(vouts) and vouts[op['vout']]['spk']==tok.treasury_spk:return bad('seal cannot be treasury')
+            if not new_seal(op['vout'],t,amt,op['lock']):return bad('seal vout must be P2TR')
+            if proof_key:state.add_usage(t,'pow',proof_key,1)
+            if discount:state.add_usage(t,'wl',owner,amt);tok.wl_minted+=amt
+            tok.minted+=amt
+            events.append(ev(txid,'mint',t,amt,f"paid {paid} sats"+(' with operator work' if discount else ' public lot mint')))
+            return events
+        if op.get('operator'):
+            if not tok.pow: return bad('operator approval requires a compact work token')
+            if ps is not None: return bad('operator approval cannot carry a signed pass')
+            ps = {'max':state.used(t,'op-max',owner), 'expiry':state.used(t,'op-expiry',owner), 'registered':True}
+            if ps['max'] <= 0: return bad('operator wallet is not approved on chain')
         reserve_left = wl_reserve_left(tok, height)
         kind_used = None
         if ps is not None:
@@ -767,7 +892,7 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
                 return bad("allowlist phase is not active")
             if height > ps["expiry"]:
                 return bad(f"allowlist pass expired at {ps['expiry']}")
-            if not bip340_verify(bytes.fromhex(tok.wl["key"]), pass_message(t, bytes.fromhex(owner), ps["max"], ps["expiry"]),
+            if not ps.get("registered") and not bip340_verify(bytes.fromhex(tok.wl["key"]), pass_message(t, bytes.fromhex(owner), ps["max"], ps["expiry"]),
                                  bytes.fromhex(ps["sig"])):
                 return bad("allowlist pass signature is not valid")
             pass_left = ps["max"] - state.used(t, "wl", owner)
@@ -796,6 +921,7 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
             return bad("seal cannot be the treasury output")
         if not new_seal(op["vout"], t, amt, op["lock"]):
             return bad("seal vout must be a P2TR output")
+        if proof_key: state.add_usage(t,'pow',proof_key,1)
         tok.minted += amt
         if kind_used:
             state.add_usage(t, kind_used, owner, amt)
@@ -866,6 +992,25 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
         events.append(ev(txid, "meta", t, 0, "authority renounced" if tok.auth_outpoint is None else "metadata updated"))
         return events
 
+    if kind == "operator":
+        t = op['tick']; tok = state.tokens.get(t)
+        if tok is None or not tok.pow or t not in auth_spent:
+            events.append(ev(txid,'invalid',t,0,'operator update must spend the compact token authority seal',op='operator'))
+            burn_pools('seals spent into an invalid operator update'); return events
+        auth_spent.discard(t); burn_pools('seals spent into an operator update')
+        if not new_seal(op['next_auth'],t,0,0,auth=True):
+            tok.auth_outpoint=None
+            events.append(ev(txid,'invalid',t,0,'operator update must re-create authority',op='operator')); return events
+        tok.auth_outpoint=f"{txid}:{op['next_auth']}"
+        if (tok.mode=='lots' and op['max']%lot_params()['lot']) or op['max'] > tok.max or op['expiry'] >= 2**32 or (op['max'] > 0 and op['expiry'] < height):
+            events.append(ev(txid,'invalid',t,0,'operator quota or expiry is invalid',op='operator')); return events
+        try: _lift_x(bytes.fromhex(op['owner']))
+        except ValueError:
+            events.append(ev(txid,'invalid',t,0,'invalid operator owner key',op='operator')); return events
+        for kind_,value in [('op-max',op['max']),('op-expiry',op['expiry'])]:
+            state.add_usage(t,kind_,op['owner'],value-state.used(t,kind_,op['owner']))
+        events.append(ev(txid,'operator',t,0,'operator quota updated on chain')); return events
+
     if kind == "allowlist":
         t = op["tick"]
         tok = state.tokens.get(t)
@@ -876,7 +1021,11 @@ def apply_tx(state: State, tx: dict, height: int, index: int = 0) -> list[dict]:
         auth_spent.discard(t)
         burn_pools("seals spent into an allowlist")
         why = None
-        if op["end"] and op["end"] < height:
+        if tok.mode=="lots":
+            why = "lot prices are immutable; use operator approvals without a price phase"
+        elif tok.pow and len(payload)>80:
+            why = "compact allowlist payload exceeds 80 bytes"
+        elif op["end"] and op["end"] < height:
             why = "allowlist end is in the past"
         elif op["end"] and op["reserve"] > tok.max - tok.minted + tok.wl_minted:
             why = "reserve is larger than the unminted supply"
@@ -935,4 +1084,6 @@ def apply_block(state: State, block: dict) -> list[dict]:
     out = []
     for i, t in enumerate(block.get("tx", [])):
         out += apply_tx(state, tx_from_rpc(t), block["height"], i)
+    if block.get('hash'): state.pow_anchors[block['height']] = block['hash']
+    state.pow_anchors = {h:v for h,v in state.pow_anchors.items() if h >= block['height']-144}
     return out

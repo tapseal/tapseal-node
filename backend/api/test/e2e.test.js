@@ -38,7 +38,7 @@ test.before(async () => {
     res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ result: wrongTxId?'ff'.repeat(32):txid, error: null, id: j.id })); }); });
   await new Promise((r) => rpcServer.listen(0, r));
   const app = express(); app.use(express.json());
-  app.use('/api/tapseal', createRouter({ dbPath: DB, network: 'mainnet', mempoolApi: 'http://127.0.0.1:9', minServerUtxo: 10000,
+  app.use('/api/tapseal', createRouter({ dbPath: DB, allowlistFile: path.join(tmp, 'allowlist.json'), network: 'mainnet', mempoolApi: 'http://127.0.0.1:9', minServerUtxo: 10000,
     publicLaunch: false, ownerAddresses: [address], featured: 'STONK', platformFee: { sats: 0 },
     rpc: { url: `http://127.0.0.1:${rpcServer.address().port}`, user: 'u', password: 'p' } }));
   server = app.listen(0); await new Promise((r) => server.once('listening', r));

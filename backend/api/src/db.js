@@ -14,7 +14,7 @@ function open(file) {
     lockPairs: db.prepare('select distinct tick, lock from seals where lock > 0'),
     events: db.prepare('select id, height, txid, kind, tick, amt, detail from events where (? is null or tick = ?) and (? is null or id < ?) order by id desc limit ?'),
     blocks: db.prepare('select height, hash, time, ntx, nops, replay_ms, root from blocks order by height desc limit ?'),
-    opsAt: db.prepare("select txid, kind, tick, amt from events where height = ? and kind in ('deploy','mint','transfer','burn','meta','allowlist','invalid','cenotaph')"),
+    opsAt: db.prepare("select txid, kind, tick, amt from events where height = ? and kind in ('deploy','mint','transfer','burn','meta','allowlist','operator','invalid','cenotaph')"),
     mempool: db.prepare('select txid, seen, kind, tick, op, error, fee_rate, vsize, bytes, source, paid from mempool order by seen desc limit ?'),
     mempoolCount: db.prepare('select count(*) n from mempool'),
     node: db.prepare('select key, value from node'),

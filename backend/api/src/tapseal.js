@@ -7,9 +7,9 @@ const ecc = require('@bitcoinerlab/secp256k1');
 bitcoin.initEccLib(ecc);
 
 const MAGIC = Buffer.from('TSL1', 'ascii');
-const OPS = { deploy: 1, mint: 2, transfer: 3, burn: 4, meta: 5, allowlist: 6 };
+const OPS = { deploy: 1, mint: 2, transfer: 3, burn: 4, meta: 5, allowlist: 6, operator: 7 };
 const BPS = 10000n;
-const MODES = { fixed: 0, curve: 1, fair: 2 };
+const MODES = { fixed: 0, curve: 1, fair: 2, lots: 3 };
 const NUMS = Buffer.from('50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0', 'hex');
 const LEAF_VERSION = 0xc0;
 const TICK_RE = /^[A-Z0-9]{1,8}$/;
@@ -36,24 +36,29 @@ function encode(op) {
   if (!OPS[op.op]) throw new Error(`unknown op ${op.op}`);
   if (op.op === 'deploy') {
     const win = !!(op.start || op.end), auth = op.auth_vout != null, wcap = !!(op.wallet_cap && B(op.wallet_cap) > 0n);
-    o.push((auth ? 1 : 0) | (win ? 2 : 0) | (wcap ? 4 : 0), ...tickBytes(op.tick), op.dec, ...varint(op.max), MODES[op.mode]);
+    o.push((auth ? 1 : 0) | (win ? 2 : 0) | (wcap ? 4 : 0) | (op.pow ? 8 : 0), ...tickBytes(op.tick), op.dec, ...varint(op.max), MODES[op.mode]);
     if (op.mode === 'fixed') o.push(...varint(op.rate), ...varint(op.cap || 0), ...varint(op.treasury_vout));
     else if (op.mode === 'curve') o.push(...varint(op.p0), ...varint(op.p1), ...varint(op.cap || 0), ...varint(op.treasury_vout));
+    else if(op.mode==='lots'){if(op.profile!==undefined&&op.profile!==1)throw Error('Unsupported lot profile');o.push(1,...varint(op.treasury_vout));}
     else o.push(...varint(op.lim));
     if (win) o.push(...varint(op.start || 0), ...varint(op.end || 0));
     if (auth) o.push(...varint(op.auth_vout));
     if (wcap) o.push(...varint(op.wallet_cap));
+    if(op.pow){const c=require('./pow').config(op.pow);o.push(2,c.bits,...varint(c.max_age));}
   } else if (op.op === 'mint') {
     o.push(...tickBytes(op.tick), ...varint(op.vout), ...varint(op.lock || 0));
-    if (op.pass && !op.owner) throw new Error('An allowlist pass needs the owner key');
+    if ((op.pass||op.proof||op.operator) && !op.owner) throw new Error('An allowlist pass needs the owner key');
     if (op.owner) {
-      o.push(op.pass ? 3 : 1, ...x32(op.owner));
+      o.push(1|(op.pass?2:0)|(op.proof?4:0)|(op.operator?8:0), ...x32(op.owner));
       if (op.pass) {
         const sig = Buffer.from(op.pass.sig, 'hex');
         if (sig.length !== 64) throw new Error('Pass signature must be 64 bytes');
         o.push(...varint(op.pass.max), ...varint(op.pass.expiry), ...sig);
       }
     }
+    if(op.proof)o.push(...varint(op.proof.height),...require('./pow').u64(op.proof.nonce));
+  } else if (op.op === 'operator') {
+    o.push(...tickBytes(op.tick),...opt(op.next_auth),...x32(op.owner),...varint(op.max),...varint(op.expiry));
   } else if (op.op === 'allowlist') {
     o.push(...tickBytes(op.tick), ...opt(op.next_auth), ...x32(op.key), ...varint(op.price), ...varint(op.reserve), ...varint(op.end));
   } else if (op.op === 'transfer') {
@@ -67,6 +72,9 @@ function encode(op) {
     o.push(...tickBytes(op.tick), ...opt(op.next_auth));
     for (const [type, val] of op.fields || []) { const v = Buffer.from(val); o.push(type, ...varint(v.length), ...v); }
   }
+  if(op.proof&&op.pass)throw Error('Compact work uses on-chain operator approval, not signed passes');
+  if(op.operator&&!op.proof)throw Error('Operator mint requires work');
+  if((op.pow||op.proof||op.op==='operator'||op.mode==='lots')&&o.length>80)throw Error('Compact payload exceeds 80 bytes');
   return Buffer.from(o);
 }
 
@@ -129,6 +137,7 @@ const reserveLeft = (token, height) => {
 
 /** Atoms for `paid` sats at the public price or the allowlist price, before clipping (tapseal.py mint_amount). */
 function mintAmount(token, paid, allowlist = false) {
+  if(token.mode==='lots'){const price=allowlist?450n:700n,p=B(paid);return p%price===0n&&p/price>=1n&&p/price<=10n?p/price*100000000000n:0n;}
   if (token.mode === 'fair') return B(token.params.lim);
   const cap = token.params.cap ? B(token.params.cap) : 0n;
   let counted = cap && B(paid) > cap ? cap : B(paid);
@@ -146,6 +155,11 @@ function quoteMint(token, paySats, opts = {}) {
   const supplyLeft = token.max - token.minted;
   const cap = token.params.cap ? B(token.params.cap) : 0n;
   const paid = B(paySats || 0);
+  if(token.mode==='lots'){
+    const pass=opts.allowlist||null,price=pass?450n:700n,raw=mintAmount(token,paid,!!pass),left=token.max-token.minted,passLeft=pass?B(pass.max)-B(pass.used||0):left;
+    const invalid=raw<=0n,limited=invalid?'lot':raw>left?'supply':raw>passLeft?'pass':null;
+    return{atoms:limited?0n:raw,counted:paid,capped:paid>price*10n,partial:limited==='supply',limited_by:limited,clipped:!!limited,left,reserve_left:0n,allowlist:!!pass,lot_count:raw/100000000000n};
+  }
   const counted = cap && paid > cap ? cap : paid;
   const reserve = opts.height == null ? 0n : reserveLeft(token, height);
   const pass = opts.allowlist || null;

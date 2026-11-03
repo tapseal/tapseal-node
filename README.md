@@ -1,117 +1,65 @@
 # TAPSEAL Node
 
-A watch-only TAPSEAL indexer, local API and terminal-style operator dashboard. Run it on your own computer, inspect the code, build it from source and compare local seal-output observations with peers.
+Run your own local TAPSEAL indexer and monitoring console. Replay token history into a persistent database, watch Taproot holdings, and inspect synchronization and peer observations from your own computer or server.
 
-**Experimental software. Mainnet uses BTC; Testnet3 uses test coins. Rewards: not active. This is not Bitcoin Core.**
+**Release candidate: 1.4.0-lots-rc.2. Mainnet uses real BTC.** The node never needs your seed phrase or spending key. Home transaction APIs are read-only. Running a node does not automatically earn rewards, grant mint discounts, or secure Bitcoin consensus.
 
-## What it does
+## Start here
 
-- Replays TAPSEAL transactions into a persistent local SQLite database and resumes stored progress.
-- Displays indexed height, source lag/freshness, peer check-ins and seal-output root comparisons.
-- Watches up to 10 Taproot addresses using local indexed holdings, exact token-atom amounts and added/removed seal observations.
-- Keeps the latest 100 wallet alerts across restarts and monitors every 30 seconds while its background service runs.
-- Provides a local node console instead of the public minting/wallet website.
-- Supports a macOS LaunchAgent or Linux user service so closing Terminal/browser does not stop it. The computer must remain awake and online.
+| You want to… | Guide |
+|---|---|
+| Install on a Mac or Linux computer | [Quick start](docs/QUICKSTART.md) |
+| Update without losing history | [Update and recovery](docs/UPDATING.md) |
+| Keep a server running | [Server operation](docs/SERVER.md) |
+| Fix startup, wrong network or rate limits | [Troubleshooting](docs/TROUBLESHOOTING.md) |
+| Understand trust and node usefulness | [How it works](docs/ARCHITECTURE.md) |
+| Search a discounted mint proof | [Mint worker](docs/MINT-WORKER.md) |
+| Build, test and publish source | [Development and release](docs/RELEASE.md) |
 
-No wallet connection, seed phrase, private key, token payment or reward eligibility is required. Watched addresses are not sent to peers or an external wallet API.
+## Install from reviewed source
 
-## Requirements
-
-Python 3.10+; Node.js 22+ (Node 22 used for testing); npm; an internet connection. Native SQLite dependency installation may need platform build tools if a compatible prebuilt binary is unavailable. CPU, disk and memory requirements grow with history; no fixed low-resource guarantee is made. macOS and Linux are the primary targets. Windows uses WSL; platform boot behavior needs separate validation.
-
-## Build and install from source
-
-From this repository's root:
+Requirements: Python 3.10+, Node.js 22 (tested), npm, Git, internet access. Run as your regular user; **do not use sudo** for the home install. Native SQLite dependencies may need platform build tools.
 
 ```bash
+git clone https://github.com/tapseal/tapseal-node.git
+cd tapseal-node
+python3 scripts/verify.py
 python3 softnode/build-release.py
-bash artifacts/tapseal-node-1.2.0-networks.1/install.sh
+bash artifacts/tapseal-node-1.4.0-lots-rc.2/install.sh
+```
+
+For a new installation, settings are obtained from the Mainnet seed. Existing installations retain their active network and databases. See [Quick start](docs/QUICKSTART.md) before switching an existing installation.
+
+```bash
 ~/.local/bin/tapseal-node service install
 ~/.local/bin/tapseal-node status
 ```
 
-The build itself does not download executable code. The installer installs locked npm dependencies, then initializes settings from the configured seed. Run as your regular user, without sudo. Inspect scripts before execution. Open http://localhost:8090 and add a public address to the watch-only monitor. The default seed's network/start settings are trusted inputs, not authenticated consensus checkpoints. For explicit Testnet3 settings on first installation:
+Open **http://localhost:8090**. A startup message is not proof of synchronization: inspect network, indexed height, lag and errors. Mainnet startup requires the matching server to publish `lot-v1` activation metadata. The service runs with the browser/terminal closed, while your computer stays awake and online. macOS starts it after login; Linux persistence after logout may require user lingering.
 
-```bash
-bash artifacts/tapseal-node-1.2.0-networks.1/install.sh --network testnet3 --start 5221529 --peer https://tapseal.xyz
-```
+## What your node provides
 
-The seed and external block providers can change or become unavailable. Verify activation settings independently before relying on indexed results. On an existing installation, run the installer with no initialization arguments to preserve settings/data. Stop the foreground node with Ctrl+C, or remove its background service before upgrading; reinstall the service afterward. Do not start a second foreground instance alongside the background service.
+- A local copy of TAPSEAL history that resumes from stored blocks after restart.
+- Local address monitoring and exact token balances from that indexed history.
+- Visibility into source lag, failures, seal-output roots and peer check-ins.
+- Optional owner-bound proof searches for eligible tokens, without keys or automatic payments.
 
-```bash
-~/.local/bin/tapseal-node service status
-~/.local/bin/tapseal-node service remove
-~/.local/bin/tapseal-node peers add https://tapseal.xyz
-~/.local/bin/tapseal-node service install
-```
+Light mode downloads block data from external APIs and checks supported block integrity properties. It **does not perform full Bitcoin consensus validation**. Full mode indexes through your Bitcoin RPC; Bitcoin validation depends on that Bitcoin node. Peer reports are unauthenticated, and a seal-output root is not a commitment to the complete ledger. One agreeing peer is not independent consensus. See [security boundaries](SECURITY.md).
 
-Home data/configuration live in ~/.tapseal, separate from the checkout. TAPSEAL_HOME overrides that directory. Build archives and checksums are under artifacts/. The locked npm dependencies are not vendored. The remote installer URL is the operator's website, not automatically a GitHub Release; publication is a separate maintainer step.
+## Main-token launch profile
 
-## Trust and verification limits
-
-Light mode depends on external Bitcoin block APIs. It checks some block/header/merkle/witness integrity, but does not implement full difficulty-transition validation, greatest-work selection or UTXO/script consensus validation. It refuses transaction construction/preview/broadcast. Full/RPC mode relies on your configured Bitcoin node for those checks. The home CLI permits plaintext RPC only on loopback; remote RPC requires HTTPS or a loopback SSH tunnel.
-
-The legacy `seal-outputs-v1` root covers live seal outputs only: token counters, parameters, metadata and usage are excluded. Peer identities/check-ins are unauthenticated and can be copied. Matching reports are not proof of independent replay, complete ledger agreement or operator identity.
-
-Wallet monitoring covers confirmed TAPSEAL seals in the indexed history, not ordinary Bitcoin balances or pending spends. Empty holdings do not prove no holdings outside that history. Removed seals can reflect a spend, reorg or replay. Alerts are local records, not desktop/email notifications. Events between scans or while offline can be missed. The service must remain running; a sleeping computer cannot monitor.
-
-No validator rewards, staking, mining, payouts or investment returns are implemented. Read [SECURITY.md](SECURITY.md) and [docs/TRUST-MODEL.md](docs/TRUST-MODEL.md).
-
-## Security hardening in 1.2.0-networks.1
-
-Home requests reject unrecognized Host headers and cross-site origins, use a hash-pinned dashboard CSP, deny framing and caching, and do not reflect permissive CORS. Only one supervisor can run per node home. Remote seed fetches and authenticated RPC calls refuse redirects; upstream body sizes/timeouts are bounded. Same-height reorgs are detected without waiting for the next block. Wallet monitor snapshots use consistent DB reads and retain committed state on errors; malformed/symlinked watch files fail closed. CI actions are pinned to commit IDs and a source guard checks for high-confidence credential/runtime-file mistakes.
-
-This is additional defense, not a certification or full Bitcoin validation. See [docs/SECURITY-HARDENING-V2.md](docs/SECURITY-HARDENING-V2.md). Existing pre-hardening watch JSON remains untouched: watch files are now scoped by network and activation height. Re-add watched public addresses after this upgrade; the old file is preserved rather than incorrectly reusing a baseline from another indexing scope. Database/index progress and node.json stay unchanged.
-
-## Tests
-
-One command (installs locked development dependencies, then runs isolated tests):
-
-```bash
-python3 scripts/verify.py
-```
-
-Or run the suites individually:
-
-```bash
-cd backend/api
-npm ci
-npm test
-cd ../..
-python3 -m unittest discover -s backend/protocol -p 'test_*.py'
-PYTHONPATH=backend/protocol:backend/indexer python3 -m unittest discover -s backend/indexer -p 'test_*.py'
-python3 -m unittest discover -s softnode -p test_security.py
-```
-
-Tests use explicitly synthetic keys/transactions; never fund the fixture keys. The CI configuration runs these suites and checks release-build repeatability. Merely including CI files does not mean hosted CI has run.
+The new activated `lot-v1` mode has 21M tokens and whole 1,000-token lots, 1–10 lots per claim. Public price is 700 sats/lot without a proof. Approved proof claims cost 450 sats/lot and require both a valid proof and a confirmed owner-authorized quota. Bitcoin fees and seal-output BTC are separate. No reservation, automatic reward or guaranteed return exists. Existing tokens retain their rules. [Protocol specification](docs/LOT-V1.md).
 
 ## Source layout
 
-| Path | Purpose |
+| Directory | Purpose |
 |---|---|
-| backend/protocol | Protocol rules, preview and test vectors |
-| backend/indexer | Block replay, persistent scanning and external block adapter |
-| backend/api | Local/API routes, peer transport, transaction verification and wallet monitor |
-| softnode/tapseal-node | CLI, supervisor and service definitions |
-| softnode/node-ui | Home dashboard source; no public minting website |
-| softnode/build-release.py | Deterministic archive builder and checksum-pinned bootstrap |
-| docs | Trust model, build/release guidance and prior review notes |
+| `backend/protocol` | Wire formats, commitments and token state transitions |
+| `backend/indexer` | Persistent replay, RPC/block APIs and mempool scanning |
+| `backend/api` | Local API, monitoring, worker policy and shared full-service code |
+| `softnode` | CLI, background supervisor, release builder and node-only console |
+| `docs` | Installation, operation, trust model and protocol references |
 
-## License and contributions
+The home archive contains the node console, not the public token-launch website. Shared backend transaction code is included for reproducible verification, but home transaction routes are disabled. This repository does not contain production RPC secrets or live databases.
 
-MIT for TAPSEAL project code; third-party dependencies retain their own licenses. See [LICENSE](LICENSE), [THIRD-PARTY.md](THIRD-PARTY.md) and [CONTRIBUTING.md](CONTRIBUTING.md). The MIT license permits proprietary forks; changes are not required to be published. Source availability helps inspection but does not certify safety or eliminate provider trust.
-
-## Mainnet / Testnet3 profiles
-
-Each network uses a separate database, activation, peer list and watch file. Existing config is saved as its active profile automatically. After the public dual backend is installed:
-
-```bash
-tapseal-node network list
-tapseal-node network configure mainnet
-tapseal-node network use mainnet
-tapseal-node network use testnet3
-```
-
-`configure` reads network/activation metadata from https://tapseal.xyz/mainnet or /testnet3, refuses a mismatched seed, and creates a read-only light profile without copying another network's RPC credentials. `use` queues a switch through the protected local API if the supervisor is running; otherwise it selects the profile for the next start. The supervisor stops its children, saves configuration and restarts itself; databases are retained. The local dashboard provides a selector for already configured profiles. No seed phrase/private key is required.
-
-Full/RPC indexing checks the RPC's reported network before applying blocks and checks saved DB network/activation. The API rejects a mismatched stored DB network. These checks prevent accidental mixing; they do not make an untrusted provider honest or add full Bitcoin consensus validation to light mode. First sync of another network can take time. A stale/mismatched backend remains blocked for transaction preview.
+MIT project license; third-party licenses remain applicable. See [LICENSE](LICENSE), [THIRD-PARTY.md](THIRD-PARTY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [SECURITY.md](SECURITY.md). Source publication is not an independent security audit. Hosted CI and real OS/wallet operation must be checked separately.

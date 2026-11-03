@@ -1,6 +1,6 @@
 # Security policy
 
-This is experimental Testnet3 software. No security certification, full-consensus validator claim or guaranteed response SLA is offered.
+This is experimental Mainnet/Testnet3 software. Mainnet uses real BTC. No security certification, full-consensus validator claim or guaranteed response SLA is offered.
 
 Before reporting: never include real private keys, seed phrases, RPC credentials, your .env/node.json files, watchlists or production database. Public addresses and fixture keys can also expose private activity; minimize reports.
 

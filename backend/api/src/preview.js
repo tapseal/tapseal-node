@@ -54,6 +54,8 @@ async function simulate(cfg, body) {
   const owners=[...new Set((body.owners||[]).map(a=>ts.ownerOfAddress(a,cfg.network).toString('hex')))];
   if(!owners.length||owners.length>64)throw new Error('Expected owner addresses are required.');
   const expected={...(body.expected||{})};
+  if(expected.treasury_address)expected.treasury_script=ts.bitcoin.address.toOutputScript(expected.treasury_address,ts.networkOf(cfg.network)).toString('hex');
+  if(expected.operator_address)expected.operator_owner=ts.ownerOfAddress(expected.operator_address,cfg.network).toString('hex');
   if(expected.recipients)expected.recipients=expected.recipients.map(r=>({...r,owner:ts.ownerOfAddress(r.address,cfg.network).toString('hex')}));
   const seen=new Set();let inputSats=0;
   const vin=tx.ins.map((input,index)=>{

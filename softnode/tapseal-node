@@ -38,11 +38,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.2.0-networks.1"
+VERSION = "1.4.0-lots-rc.2"
 HOME = Path(os.environ.get("TAPSEAL_HOME", Path.home() / ".tapseal")).expanduser()
 APP = Path(os.environ.get("TAPSEAL_APP", Path(__file__).resolve().parent.parent)).resolve()
 CONFIG = HOME / "node.json"
-SEEDS = [s for s in os.environ.get("TAPSEAL_SEEDS", "https://tapseal.xyz").split(",") if s.strip()]
+SEEDS = [s for s in os.environ.get("TAPSEAL_SEEDS", "https://tapseal.xyz/mainnet").split(",") if s.strip()]
 NETWORKS = ("mainnet", "testnet3", "testnet4", "testnet", "signet", "regtest")
 ESPLORA = {"mainnet": "https://mempool.space/api,https://blockstream.info/api", "testnet3": "https://mempool.space/testnet/api,https://blockstream.info/testnet/api",
            "testnet4": "https://mempool.space/testnet4/api", "testnet": "https://mempool.space/testnet4/api",
@@ -228,6 +228,30 @@ def instance_lock():
     return handle
 
 
+def cmd_mine(a):
+    cfg=load()
+    if a.action=='status':
+        path=HOME/'miner'/'status.json'
+        say(path.read_text() if path.is_file() else 'Mining is off; no status recorded.');return
+    body={'enabled':False} if a.action=='stop' else {'enabled':True,'tick':a.tick,'address':a.address,'pay_sats':a.pay_sats,'cpu_percent':a.cpu_percent}
+    request=urllib.request.Request(local_api(cfg).replace('/api/tapseal','/api/local-miner'),data=json.dumps(body).encode(),headers={'content-type':'application/json','x-tapseal-monitor':'1'},method='POST')
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(request,timeout=10) as response:data=json.load(response)
+        say('Mint work enabled; no transaction will be signed or broadcast.' if body['enabled'] else 'Mint work disabled.')
+    except Exception:die('Local miner control unavailable. Start the updated node service and retry.')
+
+def cmd_reindex(a):
+    import network_profiles as profiles
+    cfg=load()
+    try:handle=instance_lock()
+    except RuntimeError:die('Stop the node service before selecting a new replay database.')
+    try:
+        stamp=str(int(time.time()))+'-'+secrets.token_hex(4)
+        cfg['db']=str(HOME/'data'/cfg['network']/str(cfg['start'])/('pow-v2-replay-'+stamp+'.sqlite'))
+        save(cfg);profiles.save(HOME,cfg)
+    finally:handle.close()
+    say('Selected a new replay database. Original database retained. Start the node service to rebuild history.')
+
 def cmd_network(a):
     import copy
     sys.path.insert(0,str(Path(__file__).resolve().parent))
@@ -276,12 +300,42 @@ def cmd_start(a) -> None:
     if not cfg.get("node_id"):                # configs from before the network map
         cfg["node_id"] = secrets.token_hex(8); save(cfg)
     if cfg['network'] in profiles.NETWORKS:profiles.save(HOME,cfg)
+    if cfg.get('pow_activation') is None or cfg.get('pow_rules')!='pow-v2':
+        for seed in cfg.get('peers',[]):
+            try:
+                policy=remote_json(api_of(seed)+'/status')
+                activation=policy.get('pow_activation')
+                if 'pow-v2' in policy.get('supported_extensions',[]) and policy.get('network')==cfg['network'] and type(activation) is int and 0<activation<2**31:
+                    cfg['pow_activation']=activation;cfg['pow_rules']='pow-v2';save(cfg);profiles.save(HOME,cfg);break
+            except Exception:pass
+    if cfg['network'] in profiles.NETWORKS and (cfg.get('pow_activation') is None or cfg.get('pow_rules')!='pow-v2'):
+        die('Published PoW activation is unavailable. Check your configured network peer and retry; no legacy rules were silently selected.')
+    if cfg['network']=='mainnet' and cfg.get('lot_activation') is None:
+        for seed in cfg.get('peers',[]):
+            try:
+                status=remote_json(api_of(seed)+'/status');activation=status.get('lot_activation')
+                if status.get('network')=='mainnet' and 'lot-v1' in status.get('supported_extensions',[]) and type(activation) is int and activation>0:
+                    cfg['lot_activation']=activation;save(cfg);profiles.save(HOME,cfg);break
+            except Exception:pass
+        if cfg.get('lot_activation') is None:die('Mainnet lot activation is unavailable. Update the mainnet server first; no alternate rules were chosen.')
     py = sys.executable or need("python3", "Install Python 3.10+.")
     node = need("node", "Install Node.js 22+ (https://nodejs.org).")
     db = Path(cfg["db"]); db.parent.mkdir(parents=True, exist_ok=True)
+    if db.is_file() and cfg.get('pow_activation') is not None:
+        with sqlite3.connect(db.resolve().as_uri()+'?mode=ro',uri=True) as check:
+            meta=dict(check.execute("select key,value from node where key in ('pow_activation','pow_rules','lot_activation')"));tip=check.execute('select max(height) from blocks').fetchone()[0]
+        if meta.get('pow_activation') not in (None,'null') and json.loads(meta.get('pow_rules','null'))!='pow-v2':
+            die('RC1 ledger rules are not supported by this release. Preserve this DB and obtain a reviewed migration; reindex is not an RC1 token migration.')
+        if meta.get('pow_activation') in (None,'null') and tip is not None and tip>=cfg['pow_activation']:
+            die('This legacy database passed PoW activation. Stop the service, run tapseal-node reindex, then restart. Original data will be retained.')
+    if db.is_file() and cfg.get('lot_activation') is not None:
+        prior_lot=json.loads(meta.get('lot_activation','null'))
+        if prior_lot is None and tip is not None and tip>=cfg['lot_activation']:die('Legacy DB passed lot activation. Stop service and use reindex to select a new replay DB; original is retained.')
     logs = HOME / "logs"; logs.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "TAPSEAL_DB": str(db), "NETWORK": cfg["network"], "PYTHONUNBUFFERED": "1"}
 
+    if cfg.get('lot_activation') is not None:env['LOT_ACTIVATION_HEIGHT']=str(cfg['lot_activation'])
+    if cfg.get('pow_activation') is not None:env['POW_ACTIVATION_HEIGHT']=str(cfg['pow_activation'])
     idx = [py, str(APP / "indexer" / "tapseal_indexer.py"), "--db", str(db)]
     if cfg["mode"] == "light":
         idx += ["--esplora", cfg["esplora"], "--rps", str(cfg.get("rps", 4))]
@@ -294,10 +348,12 @@ def cmd_start(a) -> None:
         idx += ["--mempool-budget", "0"]
 
     api_env = {**env, "PYTHON_BIN": py, "PORT": str(cfg["port"]), "HOST": cfg["host"], "NODE_MODE": cfg["mode"], "PEERS": ",".join(cfg["peers"]),
-               "HOME_NODE": "true", "MAINNET_PROXY_ENABLED": "false", "PUBLIC_LAUNCH": "true" if cfg.get("public_launch", True) else "false", "ALLOWLIST_FILE": str(HOME / "data" / "allowlist.json"),
+               "HOME_NODE": "true", "MINER_DIR": str(HOME/"miner"), "MAINNET_PROXY_ENABLED": "false", "PUBLIC_LAUNCH": "true" if cfg.get("public_launch", True) else "false", "ALLOWLIST_FILE": str(HOME / "data" / "allowlist.json"),
                "NODE_PROFILES_DIR": str(HOME/"profiles"), "NETWORK_REQUEST_FILE": str(HOME/"network-switch.json"), "WALLET_MONITOR_FILE": str(HOME / "data" / ("wallet-monitor-"+cfg["network"]+"-"+str(cfg["start"])+".json")), "NODE_ID": cfg["node_id"], "PUBLIC_URL": cfg.get("public_url", "")}
     if cfg.get("serve_site", True) and (APP / "site" / "index.html").exists():
         api_env["SITE_DIR"] = str(APP / "site")
+    miner_env={'PATH':os.environ.get('PATH','/usr/bin:/bin'),'PORT':str(cfg['port']),'NETWORK':cfg['network'],'MINER_DIR':str(HOME/'miner')}
+    miner=Child('mint-worker',[node,str(APP/'api/scripts/mine-worker.js')],miner_env,logs/'mint-worker.log')
     indexer = Child("indexer", idx, env, logs / "indexer.log")
     api = Child("api", [node, str(APP / "api" / "server.js")], api_env, logs / "api.log")
 
@@ -310,12 +366,13 @@ def cmd_start(a) -> None:
             break
         time.sleep(0.2)
     threading.Thread(target=api.run, daemon=True).start()
+    threading.Thread(target=miner.run, daemon=True).start()
     say(f"{G}●{X} http://{'localhost' if cfg['host'] == '127.0.0.1' else cfg['host']}:{cfg['port']}  (API at /api/tapseal)")
 
     done = threading.Event()
     def stop(*_):
         say("stopping…")
-        api.stop(); indexer.stop(); done.set()
+        miner.stop(); api.stop(); indexer.stop(); done.set()
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     while not done.wait(1):
@@ -329,7 +386,7 @@ def cmd_start(a) -> None:
                 if target['network']==cfg['network']:continue
                 profiles.save(HOME,cfg)
                 say('Switching network to '+target['network']+'; stored databases are retained.')
-                api.stop();indexer.stop();save(target);instance_handle.close()
+                miner.stop();api.stop();indexer.stop();save(target);instance_handle.close()
                 os.execv(sys.executable,[sys.executable,str(Path(__file__).resolve()),'start'])
             except (OSError,ValueError,KeyError,sqlite3.Error):
                 say('Network switch refused: check profile configuration and database network. No ledger was deleted.')
@@ -503,9 +560,11 @@ def cmd_service(a) -> None:
         elif kind == "macos":
             uid = str(os.getuid())
             _run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"])
+            _run(["launchctl", "enable", f"gui/{uid}/{LABEL}"], True)
             ok = _run(["launchctl", "bootstrap", f"gui/{uid}", next(iter(files))], True)
-            _run(["launchctl", "enable", f"gui/{uid}/{LABEL}"])
-            say(f"{G}✓{X} service {'running' if ok else 'installed'}; starts when you log in, restarts if it stops")
+            if not ok:
+                die("Service file written, but macOS did not load it. The node is not confirmed running. See docs/TROUBLESHOOTING.md; do not reinstall with sudo.")
+            say(f"{G}✓{X} service loaded; starts when you log in, restarts if it stops")
             say(f"  logs:  tail -f {HOME}/logs/service.log")
             say("  tip: System Settings → Battery → Options → \"Prevent automatic sleeping when the display is off\" keeps it online")
         elif kind.endswith("cron"):
@@ -576,6 +635,8 @@ def main() -> None:
     i.add_argument("--public-url", help="the address others reach this node at (shown on the network map), e.g. https://node.example.org")
     i.add_argument("--no-site", action="store_true", help="API only, without the TAPSEAL website")
     i.add_argument("--force", action="store_true")
+    sub.add_parser('reindex',help='select a new database without deleting the original; stop service first')
+    m=sub.add_parser('mine',help='opt-in local proof search, never signs or broadcasts');m.add_argument('action',choices=['start','stop','status']);m.add_argument('--tick');m.add_argument('--address');m.add_argument('--pay-sats',type=int,default=0);m.add_argument('--cpu-percent',type=int,default=10)
     sub.add_parser("start", help="run the node in the foreground")
     s = sub.add_parser("status", help="show sync and peer agreement"); s.add_argument("--json", action="store_true")
     p = sub.add_parser("peers", help="list, add or remove peers")
@@ -592,7 +653,7 @@ def main() -> None:
     if a.cmd=='network' and a.action!='list' and not a.network:ap.error('network configure/use needs mainnet or testnet3')
     if a.cmd == "peers" and a.action in ("add", "remove") and not a.url:
         ap.error(f"peers {a.action} needs a URL")
-    {"network":cmd_network,"init": cmd_init, "start": cmd_start, "status": cmd_status, "peers": cmd_peers, "service": cmd_service}[a.cmd](a)
+    {"mine":cmd_mine,"reindex":cmd_reindex,"network":cmd_network,"init": cmd_init, "start": cmd_start, "status": cmd_status, "peers": cmd_peers, "service": cmd_service}[a.cmd](a)
 
 
 if __name__ == "__main__":

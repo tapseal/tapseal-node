@@ -16,6 +16,7 @@ const config = {
   featured: env.FEATURED_TICK || 'STONK',
   platformFee: { address: env.PLATFORM_FEE_ADDRESS || '', sats: env.PLATFORM_FEE_ADDRESS ? Number(env.PLATFORM_FEE_SATS || 0) : 0 },
   rpc: { url: env.BITCOIN_RPC_URL || '', user: env.BITCOIN_RPC_USER || '', password: env.BITCOIN_RPC_PASSWORD || '', bearer: env.BITCOIN_RPC_BEARER || '' },
+  homeNode: env.HOME_NODE === 'true',
   mode: env.NODE_MODE === 'light' ? 'light' : 'full',
   peers: String(env.PEERS || '').split(',').map((s) => s.trim()).filter(Boolean),
   peerIntervalMs: Number(env.PEER_INTERVAL_MS || 60000),
@@ -48,6 +49,10 @@ if(env.NODE_PROFILES_DIR&&env.NETWORK_REQUEST_FILE){
  app.use('/api/local-networks',localOnly);
  app.get('/api/local-networks',(req,res)=>res.json(profiles.list()));
  app.post('/api/local-networks/use',(req,res)=>{try{res.json(profiles.use(req.body.network))}catch{res.status(400).json({ok:false,error:'Network profile unavailable or invalid'})}});
+}
+if(env.HOME_NODE==='true'&&env.MINER_DIR){
+ const {localOnly}=require('./src/wallet-monitor');const miner=require('./src/local-miner').controls({dir:env.MINER_DIR,network:config.network,db:require('./src/db').open(config.dbPath)});
+ app.use('/api/local-miner',localOnly);app.get('/api/local-miner',(req,res)=>{try{res.json(miner.view())}catch{res.status(400).json({ok:false,error:'Miner state unavailable'})}});app.post('/api/local-miner',(req,res)=>{try{res.json(miner.set(req.body))}catch(e){res.status(400).json({ok:false,error:e.message})}});
 }
 const router=createRouter(config);
 app.use('/api/tapseal',router);

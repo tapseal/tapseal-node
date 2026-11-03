@@ -1,17 +1,28 @@
-# Build, provenance and publication
+# Development, builds and releases
 
-The project can be built without the public Next website and without downloading a prebuilt TAPSEAL archive. Source builds use Python standard-library tooling. Runtime dependency installation still fetches locked npm dependencies.
+Current candidate: `1.4.0-lots-rc.2`. It includes the Mainnet lot rules, matching home console, new onboarding documents, and a macOS launchd ordering/error-reporting fix. Old security/protocol notes remain historical references, not fresh audit certifications.
+
+## Verify and build
+
+With Node 22, Python 3.10+ and npm:
 
 ```bash
+python3 scripts/verify.py
 python3 softnode/build-release.py
 ```
 
-Outputs under artifacts/: unpacked runtime, versioned tar.gz, SHA-256 file and checksum-pinned install.sh. The runtime includes LICENSE, SECURITY.md, THIRD-PARTY.md and SOURCE.json (hashes of source files used for this build). Tar ordering, owner/group, modes and timestamps are normalized; gzip embeds a fixed timestamp and no source filename. With identical source and SOURCE_DATE_EPOCH (default 0), repeated local builds are byte-identical. Cross-platform/Python-version repeatability and dependency-native-binary reproducibility are separate concerns and not claimed.
+Tests use synthetic fixtures; no real BTC transaction is made. Check the actual hosted CI result after pushing. The workflow covers Ubuntu/macOS and pins its action revisions; inclusion of a workflow is not evidence it passed. Dependency audit results depend on the advisory database at execution time.
 
-Never publish .env, node.json, watchlists, logs, SQLite files or node_modules. Review the actual source before making it public. Third-party source attribution must remain intact. Fixture keys are synthetic and must never hold value. Check source rights before applying MIT to externally contributed material.
+`artifacts/` contains the unpacked runtime, `tapseal-node-1.4.0-lots-rc.2.tar.gz`, its SHA-256 file and pinned `install.sh`. The runtime has a node console rather than the public website. SOURCE.json records source hashes. Ordering, timestamps, permissions and gzip metadata are normalized. Identical input and SOURCE_DATE_EPOCH produce repeatable local archives; cross-platform native dependency reproducibility is a separate concern.
 
-The public source repository is https://github.com/tapseal/tapseal-node. The v1 baseline was verified at commit 916ea3ead84b1eabd34ca04a89cead876e995314. This hardening update still requires committing/pushing and hosted CI verification; an included workflow is not evidence that CI has passed. Keep the intended remote distinct from unrelated projects. Enable private vulnerability reporting in repository settings before public security reports are invited.
+## Publish
 
-Use a tagged source commit for each published archive, publish checksums next to it, and compare the tagged source build to the distributed archive. Document any source differences. The bootstrap currently downloads from tapseal.xyz; it must be published together with the exact matching archive. Do not overwrite an existing version with different bytes. This draft version is 1.2.0-networks.1; earlier website releases may differ. No signature/key provenance mechanism is implemented; a SHA-256 next to a compromised download is not independent publisher authentication.
+Review the source, tests, diff and credential guard. Preserve copyright, MIT and third-party notices. Never commit node_modules, production environment/config, SQLite files, logs, watchlists or private keys. Fixture keys must never hold value. Commit the source first, tag the exact reviewed commit, then attach/build that source's release artifacts. Do not overwrite a version with different bytes.
 
-After source publication, add the actual public repository/tag links to the website and home console. Do not display an invented or not-yet-created GitHub repository link. Prefer a reviewed tagged release rather than asking people to execute changing scripts from main.
+The website and GitHub source are separate publications. Upload the archive, checksum and pinned installer together to the website only after verification. Do not claim an updated website download just because main changed. No release-signing key or independent publisher authentication is implemented; a checksum delivered with a compromised bootstrap is not independent provenance.
+
+Protocol cutovers are not ordinary UI updates. Mainnet lot-v1 activation must agree with the full server/indexer and participating clients. Do not alter an existing activation or legacy token history to make a launch work. See [LOT-V1](LOT-V1.md).
+
+## Repository refresh
+
+Use a clean replacement of the tracked source tree on the existing `main` branch, with a remote backup branch first. A normal new commit preserves recovery and the same repository URL; it avoids breaking website/install links or losing issues/tags. Do not force-push or delete the repository to make the files look clean. Verify existing release/download links separately before removing old assets.

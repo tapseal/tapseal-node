@@ -65,7 +65,7 @@ function cleanUtxos(utxos, minValue) {
  * pass: { max, expiry, sig, used } when the wallet mints with an allowlist pass.
  * walletUsed: public atoms this owner key already minted (for tokens with a wallet limit).
  */
-function buildMint({ token, tip, address, publicKey, paySats, feeRate, lock = 0, utxos, network, platformFee, pass = null, walletUsed = 0n }) {
+function buildMint({ token, tip, address, publicKey, paySats, feeRate, lock = 0, utxos, network, platformFee, pass = null, walletUsed = 0n, proof = null }) {
   const from = payer(address, publicKey, network);
   const owner = ts.ownerOfAddress(address, network);
   const next = tip + 1;
@@ -73,10 +73,13 @@ function buildMint({ token, tip, address, publicKey, paySats, feeRate, lock = 0,
   if (token.end && next > token.end) throw new Error(`${token.tick} closed at block ${token.end}.`);
   if (token.minted >= token.max) throw new Error(`${token.tick} is sold out.`);
   if (lock && (lock <= next || lock >= 500000000)) throw new Error('Lock must be a future block height.');
+  if(token.mode==='lots'&&!Number.isSafeInteger(Number(paySats)))throw Error('Lot payments must be whole satoshis');
   const pay = token.mode === 'fair' ? 0 : Math.floor(Number(paySats));
-  if (token.mode !== 'fair' && !(pay >= DUST)) throw new Error(`Pay at least ${DUST} sats.`);
+  if (token.mode !== 'fair' && !(pay >= (token.mode==='lots'?450:DUST))) throw new Error(`Pay at least ${DUST} sats.`);
+  if(token.pow&&token.mode!=='fair'&&pay>Number(token.params.cap))throw Error('PoW payment exceeds per-mint cap');
+  if(token.pow&&(token.mode!=='lots'||pass))require('./pow').check({token,owner:owner.toString('hex'),network,tip:{height:tip},proof,paid:pay,lock});
   const wlOn = ts.wlActive(token, next);
-  if (pass && !wlOn) throw new Error(`${token.tick} has no active allowlist phase.`);
+  if (pass && !wlOn && token.mode!=='lots') throw new Error(`${token.tick} has no active allowlist phase.`);
   if (pass && next > Number(pass.expiry)) throw new Error('Your allowlist pass has expired.');
   const quote = ts.quoteMint(token, pay, { height: next, allowlist: pass ? { max: BigInt(pass.max), used: BigInt(pass.used || 0) } : null, walletUsed: BigInt(walletUsed || 0) });
   if (quote.atoms <= 0n) {
@@ -85,11 +88,12 @@ function buildMint({ token, tip, address, publicKey, paySats, feeRate, lock = 0,
     if (quote.limited_by === 'reserve') throw new Error(pass ? 'The allowlist reserve is used up.' : `The rest of ${token.tick} is reserved for the allowlist until block ${token.wl.end}.`);
     throw new Error('That amount buys zero tokens.');
   }
-  const named = !!pass || (token.wallet_cap && BigInt(token.wallet_cap) > 0n);
+  if(token.mode==='lots'&&(quote.clipped||quote.capped))throw Error('Choose 1..10 whole lots within remaining supply and allowance');
+  const named = !!token.pow || !!pass || (token.wallet_cap && BigInt(token.wallet_cap) > 0n);
 
   if (pay && from.script.toString('hex') === token.treasury_spk) throw new Error('This wallet is the treasury. Mint from a different address so change is not counted as payment.');
   const payload = ts.encode({ op: 'mint', tick: token.tick, vout: 1, lock, ...(named ? { owner } : {}),
-    ...(pass ? { pass: { max: BigInt(pass.max), expiry: Number(pass.expiry), sig: pass.sig } } : {}) });
+    ...(pass ? token.pow ? {operator:true} : { pass: { max: BigInt(pass.max), expiry: Number(pass.expiry), sig: pass.sig } } : {}), ...(token.pow&&(token.mode!=='lots'||pass) ? {proof} : {}) });
   const sealOut = ts.seal(token.tick, owner, { lock, network });
   const outs = [{ script: ts.opReturnScript(payload), value: 0 }, { script: sealOut.script, value: ts.SEAL_SATS }];
   if (pay) outs.push({ script: Buffer.from(token.treasury_spk, 'hex'), value: pay });
@@ -101,7 +105,7 @@ function buildMint({ token, tip, address, publicKey, paySats, feeRate, lock = 0,
   return finish(psbt, f, from, { feeRate, summary: {
     op: 'mint', tick: token.tick, payload_hex: payload.toString('hex'), seal_address: sealOut.address, seal_vout: 1, lock,
     pay_sats: pay, atoms: quote.atoms.toString(), capped: quote.capped, partial: quote.partial, clipped: quote.clipped, limited_by: quote.limited_by,
-    allowlist: !!pass, owner_named: named,
+    allowlist: !!pass, owner_named: named, lot_count:token.mode==='lots'?String(quote.lot_count):undefined,platform_fee_sats:platformFee?.sats||0,
   } });
 }
 
@@ -193,6 +197,7 @@ function buildAllowlist({ token, tip, seals, address, publicKey, form, feeRate, 
   const owner = ts.ownerOfAddress(address, network);
   const auth = seals.find((s) => s.tick === token.tick && s.auth && s.outpoint === token.auth_outpoint);
   if (!auth) throw new Error(`This wallet does not hold the ${token.tick} authority seal.`);
+  if(token.mode==='lots')throw Error('Lot prices are immutable. Register operator approvals; no price phase is needed.');
   const end = Number(form.end || 0);
   const op = { op: 'allowlist', tick: token.tick, next_auth: 1, key: String(form.key || ''), price: BigInt(form.price || 0), reserve: BigInt(form.reserve || 0), end };
   if (end) {
@@ -204,6 +209,7 @@ function buildAllowlist({ token, tip, seals, address, publicKey, form, feeRate, 
     if (op.reserve > token.max - token.minted + BigInt(token.wl_minted || 0)) throw new Error('The reserve is larger than the unminted supply.');
   } else op.key = '00'.repeat(32);
   const payload = ts.encode(op);
+  if(token.pow&&payload.length>80)throw Error('Compact payload exceeds 80 bytes');
   const outs = [{ script: ts.opReturnScript(payload), value: 0 }, { script: ts.seal(token.tick, owner, { auth: true, network }).script, value: ts.SEAL_SATS }];
   const psbt = new bitcoin.Psbt({ network: ts.networkOf(network) });
   const sealSign = addSealInputs(psbt, [auth], owner, network);
@@ -213,6 +219,27 @@ function buildAllowlist({ token, tip, seals, address, publicKey, form, feeRate, 
   f.signInputs = [...sealSign.map((x) => ({ ...x, address })), ...f.signInputs];
   return finish(psbt, f, from, { feeRate, summary: { op: 'allowlist', tick: token.tick, payload_hex: payload.toString('hex'), authority_input: auth.outpoint,
     key: op.key, price: op.price.toString(), reserve: op.reserve.toString(), end } });
+}
+
+function buildOperator({ token, tip, seals, address, publicKey, form, feeRate, utxos, network }) {
+  const from = payer(address, publicKey, network);
+  const owner = ts.ownerOfAddress(address, network);
+  const auth = seals.find((s) => s.tick === token.tick && s.auth && s.outpoint === token.auth_outpoint);
+  if (!auth) throw new Error(`This wallet does not hold the ${token.tick} authority seal.`);
+  if(!token.pow)throw Error('Operator registration requires a compact PoW token');
+  const target=ts.ownerOfAddress(String(form.operator_address||''),network).toString('hex');
+  const maximum=BigInt(form.max_atoms),expiry=Number(form.expiry);
+  if((token.mode==='lots'&&maximum%100000000000n!==0n)||maximum<0n||maximum>token.max||!Number.isSafeInteger(expiry)||expiry<0||expiry>=2**32||(maximum>0n&&expiry<=tip+1))throw Error('Invalid operator quota or expiry');
+  const op={op:'operator',tick:token.tick,next_auth:1,owner:target,max:maximum,expiry};
+  const payload = ts.encode(op);
+  const outs = [{ script: ts.opReturnScript(payload), value: 0 }, { script: ts.seal(token.tick, owner, { auth: true, network }).script, value: ts.SEAL_SATS }];
+  const psbt = new bitcoin.Psbt({ network: ts.networkOf(network) });
+  const sealSign = addSealInputs(psbt, [auth], owner, network);
+  const f = fund(psbt, { from, utxos, fixedOut: outs.reduce((s2, o) => s2 + o.value, 0), haveIn: ts.SEAL_SATS,
+    baseVb: 10.5 + SEAL_IN_VB(0) + outs.reduce((s2, o) => s2 + outVb(o.script), 0), feeRate });
+  for (const o of outs) psbt.addOutput(o);
+  f.signInputs = [...sealSign.map((x) => ({ ...x, address })), ...f.signInputs];
+  return finish(psbt,f,from,{feeRate,summary:{op:'operator',tick:token.tick,payload_hex:payload.toString('hex'),operator_address:form.operator_address,max_atoms:String(maximum),expiry}});
 }
 
 // ── deploy ─────────────────────────────────────────────────────────────────
@@ -226,17 +253,21 @@ function buildDeploy({ form, address, publicKey, feeRate, utxos, network }) {
   const max = BigInt(form.max_atoms);
   if (max <= 0n) throw new Error('Max supply must be above zero.');
   const op = { op: 'deploy', tick, dec, max, mode: form.mode };
-  const paid = form.mode === 'fixed' || form.mode === 'curve';
+  if(form.pow)op.pow=require('./pow').config(form.pow);
+  const paid = form.mode === 'fixed' || form.mode === 'curve' || form.mode==='lots';
+  if(form.mode==='lots'){if(dec!==8||max!==2100000000000000n||!op.pow||form.auth===false)throw Error('Main launch requires 21M tokens, 8 decimals, work settings and an authority seal');op.profile=1;}
   if (form.mode === 'fixed') { op.rate = BigInt(form.rate); op.cap = BigInt(form.cap || 0); if (op.rate <= 0n) throw new Error('Rate must be above zero.'); }
   else if (form.mode === 'curve') { op.p0 = BigInt(form.p0); op.p1 = BigInt(form.p1); op.cap = BigInt(form.cap || 0); if (!(op.p0 > 0n && op.p1 >= op.p0)) throw new Error('Curve needs 0 < start price <= end price.'); }
   else if (form.mode === 'fair') { op.lim = BigInt(form.lim_atoms); if (!(op.lim > 0n && op.lim <= max)) throw new Error('Per-mint amount must be between 1 atom and the max supply.'); }
-  else throw new Error('Mode must be fixed, curve or fair.');
+  else if(form.mode!=='lots')throw new Error('Unknown mint mode');
   if (form.start || form.end) { op.start = Number(form.start || 0); op.end = Number(form.end || 0); if (op.end && op.end < op.start) throw new Error('The window closes before it opens.'); }
   if (form.wallet_cap_atoms && BigInt(form.wallet_cap_atoms) > 0n) { op.wallet_cap = BigInt(form.wallet_cap_atoms); if (op.wallet_cap > max) throw new Error('The per-wallet limit cannot exceed the max supply.'); }
+  if(form.pow&&paid&&form.mode!=='lots'&&!(op.cap>=546n))throw Error('Paid PoW tokens need a per-mint payment cap of at least 546 sats');
   const outs = [{ script: null, value: 0 }];
   if (paid) { op.treasury_vout = outs.length; outs.push({ script: bitcoin.address.toOutputScript(form.treasury_address || address, ts.networkOf(network)), value: DUST }); }
   let authAddress = null;
   if (form.auth !== false) { op.auth_vout = outs.length; const a = ts.seal(tick, owner, { auth: true, network }); authAddress = a.address; outs.push({ script: a.script, value: ts.SEAL_SATS }); }
+  if(form.mode==='lots'&&!(outs[1].script.length===34&&outs[1].script[0]===0x51))throw Error('The main-token treasury must be Taproot');
   const payload = ts.encode(op);
   outs[0].script = ts.opReturnScript(payload);
   const psbt = new bitcoin.Psbt({ network: ts.networkOf(network) });
@@ -254,4 +285,4 @@ function extract(psbtOrHex, network) {
   return psbt.extractTransaction();
 }
 
-module.exports = { payer, fund, buildMint, buildTransfer, buildBurn, buildDeploy, buildAllowlist, extract, cleanUtxos, DUST };
+module.exports = { payer, fund, buildMint, buildTransfer, buildBurn, buildDeploy, buildAllowlist, buildOperator, extract, cleanUtxos, DUST };

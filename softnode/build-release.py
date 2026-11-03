@@ -16,6 +16,9 @@ shutil.copytree(ROOT/'softnode/node-ui',stage/'app/site')
 shutil.copy2(ROOT/'softnode/tapseal-node',stage/'app/bin/tapseal-node')
 shutil.copy2(ROOT/'softnode/network_profiles.py',stage/'app/bin/network_profiles.py')
 for file in ['install.sh','Dockerfile','docker-compose.yml']:shutil.copy2(ROOT/'softnode'/file,stage/file)
+(stage/'docs').mkdir();shutil.copy2(ROOT/'docs/LOT-V1.md',stage/'docs/LOT-V1.md');shutil.copy2(ROOT/'docs/POW-COMPACT-V2.md',stage/'docs/POW-COMPACT-V2.md');shutil.copy2(ROOT/'docs/GUIDED-WORKER.md',stage/'docs/GUIDED-WORKER.md')
+for file in ['QUICKSTART.md','UPDATING.md','TROUBLESHOOTING.md','SERVER.md','ARCHITECTURE.md','MINT-WORKER.md','RELEASE.md']:
+ shutil.copy2(ROOT/'docs'/file,stage/'docs'/file)
 for file in ['README.md','LICENSE','SECURITY.md','THIRD-PARTY.md']:shutil.copy2(ROOT/file,stage/file)
 source_files={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(ROOT.rglob('*')) if p.is_file() and not any(part in {'node_modules','__pycache__','.git','artifacts'} for part in p.relative_to(ROOT).parts) and p.suffix!='.pyc'}
 (stage/'SOURCE.json').write_text(json.dumps({'version':version,'files':source_files},sort_keys=True,indent=2)+'\n')
