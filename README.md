@@ -1,6 +1,6 @@
 # TAPSEAL Node
 
-**Install a local TAPSEAL node — not the minting website or its server.**
+**Install a local TAPSEAL node - not the minting website or its server.**
 
 This repository contains the block indexer, protocol verification, a read-only local API, wallet monitoring, the optional proof worker, and the terminal-style node console. It does not contain the public launch website, owner-management service, transaction builders, signed-pass issuer, transaction-preview service or Bitcoin transaction relay.
 
